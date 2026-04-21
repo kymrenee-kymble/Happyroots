@@ -624,17 +624,74 @@ function LogModal({plant,type,onLog,onClose}){
   );
 }
 
-// ── Google Drive API (real OAuth, not MCP) ───────────────────────────────────
+// ── Google Drive — redirect-based OAuth (works on all mobile browsers) ─────────
 const GDRIVE_CLIENT_ID = "425465979045-j818osj85725uknva1o0mp0boabvtbrd.apps.googleusercontent.com";
 const GDRIVE_API_KEY   = "AIzaSyA4sN1gHadoYR1fn5V-M8KksiXj138Ke8I";
 const GDRIVE_SCOPE     = "https://www.googleapis.com/auth/drive.appdata";
 const GDRIVE_FILE      = "happyroots-data.json";
-// Using appDataFolder — a hidden private folder only this app can see.
-// No clutter in your Drive, no sharing concerns.
+const REDIRECT_URI     = window.location.origin;
 
-let _gapiReady = false;
-let _tokenClient = null;
+let _gapiReady  = false;
 let _accessToken = null;
+
+function saveToken(token, expiresIn) {
+  const exp = Date.now() + (expiresIn - 60) * 1000;
+  try { localStorage.setItem("hr-token", JSON.stringify({ token, exp })); } catch {}
+  _accessToken = token;
+}
+
+function loadToken() {
+  if (_accessToken) return _accessToken;
+  try {
+    const raw = localStorage.getItem("hr-token");
+    if (!raw) return null;
+    const { token, exp } = JSON.parse(raw);
+    if (Date.now() < exp) { _accessToken = token; return token; }
+    localStorage.removeItem("hr-token");
+  } catch {}
+  return null;
+}
+
+// Redirect to Google OAuth — works on Safari iOS, no popup needed
+function startOAuthRedirect() {
+  try { localStorage.setItem("hr-oauth-pending", "1"); } catch {}
+  const params = new URLSearchParams({
+    client_id: GDRIVE_CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    response_type: "token",
+    scope: GDRIVE_SCOPE,
+    include_granted_scopes: "true",
+  });
+  window.location.href = "https://accounts.google.com/o/oauth2/v2/auth?" + params.toString();
+}
+
+// Call on app load — picks up token from URL hash after redirect back
+function handleOAuthReturn() {
+  const hash = window.location.hash;
+  if (!hash || !hash.includes("access_token")) return null;
+  const params = new URLSearchParams(hash.slice(1));
+  const token = params.get("access_token");
+  const expiresIn = parseInt(params.get("expires_in") || "3600");
+  if (token) {
+    saveToken(token, expiresIn);
+    try {
+      localStorage.setItem("hr-drive-authed", "1");
+      localStorage.removeItem("hr-oauth-pending");
+    } catch {}
+    window.history.replaceState({}, document.title, window.location.pathname);
+    return token;
+  }
+  return null;
+}
+
+async function getAccessToken() {
+  const token = loadToken();
+  if (token) return token;
+  // Token expired — trigger redirect to re-auth
+  startOAuthRedirect();
+  await new Promise(() => {}); // never resolves — redirect will happen
+  return null;
+}
 
 function loadGapiScript() {
   return new Promise(resolve => {
@@ -646,57 +703,16 @@ function loadGapiScript() {
   });
 }
 
-function loadGisScript() {
-  return new Promise(resolve => {
-    if (window.google?.accounts) { resolve(); return; }
-    const s = document.createElement("script");
-    s.src = "https://accounts.google.com/gsi/client";
-    s.onload = resolve;
-    document.head.appendChild(s);
-  });
-}
-
 async function initGapi() {
   if (_gapiReady) return;
   await loadGapiScript();
   await new Promise(resolve => window.gapi.load("client", resolve));
-  await window.gapi.client.init({ apiKey: GDRIVE_API_KEY, discoveryDocs: ["https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"] });
+  await window.gapi.client.init({
+    apiKey: GDRIVE_API_KEY,
+    discoveryDocs: ["https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"]
+  });
   _gapiReady = true;
 }
-
-async function getAccessToken(forcePrompt = false) {
-  if (_accessToken && !forcePrompt) return _accessToken;
-  await loadGisScript();
-  return new Promise((resolve, reject) => {
-    if (!_tokenClient) {
-      _tokenClient = window.google.accounts.oauth2.initTokenClient({
-        client_id: GDRIVE_CLIENT_ID,
-        scope: GDRIVE_SCOPE,
-        callback: (resp) => {
-          if (resp.error) { reject(resp); return; }
-          _accessToken = resp.access_token;
-          // Remember that this user has authed so we try silently next time
-          try { localStorage.setItem("hr-drive-authed", "1"); } catch {}
-          setTimeout(() => { _accessToken = null; }, (resp.expires_in - 60) * 1000);
-          resolve(_accessToken);
-        },
-      });
-    } else {
-      // Reuse existing client, just update callback
-      _tokenClient.callback = (resp) => {
-        if (resp.error) { reject(resp); return; }
-        _accessToken = resp.access_token;
-        try { localStorage.setItem("hr-drive-authed", "1"); } catch {}
-        setTimeout(() => { _accessToken = null; }, (resp.expires_in - 60) * 1000);
-        resolve(_accessToken);
-      };
-    }
-    // Use empty prompt for silent re-auth if previously authed, otherwise show picker
-    const prompt = forcePrompt ? "consent" : "";
-    _tokenClient.requestAccessToken({ prompt });
-  });
-}
-
 async function driveReadFile() {
   await initGapi();
   const token = await getAccessToken();
@@ -822,127 +838,85 @@ export default function App() {
     return null;
   }
 
-  // Load on mount: local first (instant), then Drive in background
+  // Load on mount: handle OAuth return, then load data
   useEffect(()=>{
     (async()=>{
-      // ── localStorage sanity check ──────────────────────────────────────────
-      try {
-        localStorage.setItem("hoya-test", "ok");
-        const testVal = localStorage.getItem("hoya-test");
-        console.log("✓ localStorage OK: " + testVal);
-        // List all hoya keys
-        for (let i=0; i<localStorage.length; i++) {
-          const k = localStorage.key(i);
-          if (k && k.startsWith("hoya")) {
-            const len = localStorage.getItem(k)?.length || 0;
-            console.log("found: " + k + " (" + len + " chars)");
-          }
-        }
-      } catch(e) {
-        console.log("✗ localStorage BROKEN: " + String(e));
+      // 1. Check if returning from Google OAuth redirect
+      const returnToken = handleOAuthReturn();
+      if (returnToken) {
+        console.log("✓ OAuth complete, got token");
+        setDriveAuthed(true); driveAuthedRef.current = true;
       }
-      // 1. Load local immediately (synchronous localStorage)
+
+      // 2. Load session cache immediately so app is usable
       const local = readLocal();
       const localChat = readLocalChat();
-      console.log(local ? ("✓ loaded " + Object.keys(local).length + " plants") : "⚠ no local data — starting fresh");
       setPlants(local || initPlants());
       if (localChat) setChatMsgs(localChat);
 
-      // 2. Try Drive — always. Silent re-auth if previously connected.
-      setDriveStatus("connecting");
-      const prevAuthed = localStorage.getItem("hr-drive-authed") === "1";
-      console.log(prevAuthed ? "previously authed — trying Drive" : "first time — need to connect Drive");
-      try {
-        const driveData = await driveReadFile();
-        if (driveData?.plants) {
-          setPlants(driveData.plants);
-          if (driveData.chat) setChatMsgs(driveData.chat);
-          try { localStorage.setItem("hr-session", JSON.stringify({ plants: driveData.plants, savedAt: driveData.savedAt })); } catch {}
-          setDriveAuthed(true); driveAuthedRef.current = true;
-          try { localStorage.setItem("hr-drive-authed","1"); } catch {}
-          setDriveStatus("saved");
-          console.log("✓ Drive loaded " + Object.keys(driveData.plants).length + " plants");
-          showToast("☁️ Loaded from Google Drive");
-        } else {
-          setDriveAuthed(true); driveAuthedRef.current = true;
-          setDriveStatus("idle");
-          console.log("Drive connected, no file yet — will create on first save");
+      // 3. Try Drive if we have any token
+      const tok = returnToken || loadToken();
+      if (tok) {
+        setDriveStatus("connecting");
+        try {
+          const driveData = await driveReadFile();
+          if (driveData?.plants) {
+            setPlants(driveData.plants);
+            if (driveData.chat) setChatMsgs(driveData.chat);
+            try { localStorage.setItem("hr-session", JSON.stringify({ plants: driveData.plants, savedAt: driveData.savedAt })); } catch {}
+            setDriveAuthed(true); driveAuthedRef.current = true;
+            try { localStorage.setItem("hr-drive-authed","1"); } catch {}
+            setDriveStatus("saved");
+            const n = Object.keys(driveData.plants).length;
+            if (returnToken) showToast("☁️ Connected! " + n + " plants loaded");
+            else console.log("Drive loaded " + n + " plants");
+          } else {
+            setDriveAuthed(true); driveAuthedRef.current = true;
+            setDriveStatus("idle");
+            if (returnToken) showToast("☁️ Drive connected — ready to save");
+          }
+        } catch(e) {
+          console.log("Drive load error:", e?.message||e);
+          setDriveStatus("disconnected");
         }
-      } catch(e) {
-        console.log("Drive load error: " + (e?.message||String(e)));
+      } else {
         setDriveStatus("disconnected");
+        console.log("No token — connect Drive to save data");
       }
     })();
   },[]);
 
   // Connect to Drive manually (triggers Google OAuth popup)
-  async function connectDrive() {
-    setDriveStatus("connecting");
-    console.log("connectDrive: starting auth flow");
+  function connectDrive() {
+    // Save session data before redirect so nothing is lost
     try {
-      await initGapi();
-      console.log("GAPI ready, requesting token...");
-      _accessToken = null;
-      const token = await getAccessToken(true);
-      console.log("✓ got token: " + token.slice(0,10) + "...");
-      setDriveAuthed(true); driveAuthedRef.current = true;
-      try { localStorage.setItem("hr-drive-authed","1"); } catch {}
-      setDriveStatus("syncing");
-      showToast("☁️ Signed in — loading your data…");
-      console.log("loading from Drive...");
-      const driveData = await driveReadFile();
-      if (driveData?.plants) {
-        const count = Object.keys(driveData.plants).length;
-        console.log("✓ loaded " + count + " plants from Drive");
-        setPlants(driveData.plants);
-        if (driveData.chat) setChatMsgs(driveData.chat);
-        try { localStorage.setItem("hr-session", JSON.stringify({ plants: driveData.plants, savedAt: driveData.savedAt })); } catch {}
-        setDriveStatus("saved");
-        showToast("☁️ Loaded " + count + " plants from Drive");
-      } else {
-        console.log("no Drive file yet — will create on first save");
-        setDriveStatus("saved");
-        showToast("☁️ Drive connected — ready to save");
-      }
-    } catch(e) {
-      const msg = e?.error || e?.message || String(e);
-      console.log("✗ Drive auth failed: " + msg);
-      setDriveStatus("disconnected");
-      if (msg.includes("popup") || msg.includes("blocked")) {
-        showToast("⚠️ Popup blocked — allow popups for claude.ai");
-      } else {
-        showToast("⚠️ Drive connection failed: " + msg);
-      }
-    }
+      if (plants) localStorage.setItem("hr-session", JSON.stringify({ plants, savedAt: new Date().toISOString() }));
+    } catch {}
+    showToast("Redirecting to Google sign-in…");
+    setTimeout(() => startOAuthRedirect(), 800);
   }
 
-  // Debounced persist: local immediately, Drive 4s later
+  // Debounced persist: local immediately, Drive 2s later
   const persist = useCallback(async (p, chat) => {
-    const KEY = "hoya-plants-stable"; // hardcoded — no closure dependency
-    console.log("persist called: " + (p ? Object.keys(p).length + " plants" : "NULL"));
-    if (!p || typeof p !== "object") { console.log("✗ persist: invalid data"); return; }
+    if (!p || typeof p !== "object") return;
     const saved = { plants: p, savedAt: new Date().toISOString() };
-    // ── Local save (synchronous localStorage) ────────────────────────────────
+    // ── Local save ────────────────────────────────────────────────────────────
     try {
       const json = JSON.stringify(saved);
-      localStorage.setItem(KEY, json);
+      localStorage.setItem("hr-session", json);
+      localStorage.setItem("hoya-plants-stable", json);
       // Verify immediately
       const verify = localStorage.getItem(KEY);
       if (verify) {
         const vp = JSON.parse(verify);
         const count = vp?.plants ? Object.keys(vp.plants).length : "?";
-        console.log("✓ saved & verified: " + count + " plants");
-      } else {
-        console.log("✗ save failed — key missing after write");
-      }
+
     } catch(e) {
       console.log("✗ local save FAILED: " + String(e));
     }
-    // ── Drive save (debounced 4s) ────────────────────────────────────────────
-    if (!driveAuthedRef.current) {
-      console.log("Drive not authed — local only");
-      return;
-    }
+    // ── Drive save (debounced 2s) ────────────────────────────────────────────
+    const tok = loadToken();
+    if (!tok) { setDriveStatus("disconnected"); return; }
     if (saveTimer.current) clearTimeout(saveTimer.current);
     setDriveStatus("syncing");
     saveTimer.current = setTimeout(async () => {

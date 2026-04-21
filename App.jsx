@@ -910,6 +910,8 @@ export default function App() {
       if (verify) {
         const vp = JSON.parse(verify);
         const count = vp?.plants ? Object.keys(vp.plants).length : "?";
+        console.log("✓ local save OK: " + count + " platns");
+      }
 
     } catch(e) {
       console.log("✗ local save FAILED: " + String(e));

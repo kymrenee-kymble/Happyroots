@@ -893,7 +893,7 @@ export default function App() {
       if (plants) localStorage.setItem("hr-session", JSON.stringify({ plants, savedAt: new Date().toISOString() }));
     } catch {}
     showToast("Redirecting to Google sign-in…");
-    setTimeout(() => startOauthRedirect(), 800);
+    setTimeout(() => startOAuthRedirect(), 800);
   }
 
   // Debounced persist: local immediately, Drive 2s later
@@ -910,8 +910,6 @@ export default function App() {
       if (verify) {
         const vp = JSON.parse(verify);
         const count = vp?.plants ? Object.keys(vp.plants).length : "?";
-        console.log("✓ local save OK: " + count + " platns");
-      }
 
     } catch(e) {
       console.log("✗ local save FAILED: " + String(e));

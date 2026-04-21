@@ -661,7 +661,7 @@ function storeToken(token, expiresIn) {
 function startOAuthRedirect() {
   const params = new URLSearchParams({
     client_id:              GDRIVE_CLIENT_ID,
-    redirect_uri:           window.location.origin + window.location.pathname,
+    redirect_uri:           window.location.origin + "/",
     response_type:          "token",
     scope:                  GDRIVE_SCOPE,
     include_granted_scopes: "true",

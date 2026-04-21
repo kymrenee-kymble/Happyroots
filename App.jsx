@@ -893,7 +893,7 @@ export default function App() {
       if (plants) localStorage.setItem("hr-session", JSON.stringify({ plants, savedAt: new Date().toISOString() }));
     } catch {}
     showToast("Redirecting to Google sign-in…");
-    setTimeout(() => startOAuthRedirect(), 800);
+    startOauthRedirect();
   }
 
   // Debounced persist: local immediately, Drive 2s later

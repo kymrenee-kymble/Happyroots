@@ -787,9 +787,12 @@ export default function App() {
   const SKEY = "happyroots-plants";
 
   function localSave(p) {
-    try { localStorage.setItem(SKEY, JSON.stringify({ plants:p, savedAt:new Date().toISOString() })); } catch {}
-    // Also write legacy keys so Claude artifact version can pick it up
-    try { localStorage.setItem("hr-session", JSON.stringify({ plants:p, savedAt:new Date().toISOString() })); } catch {}
+    const savedAt = new Date().toISOString();
+    const payload = JSON.stringify({ plants:p, savedAt });
+    try { localStorage.setItem(SKEY, payload); } catch {}
+    try { localStorage.setItem("happyroots-plants", payload); } catch {}
+    try { localStorage.setItem("hr-session", payload); } catch {}
+    try { localStorage.setItem("hoya-plants-stable", payload); } catch {}
   }
 
   function localLoad() {
@@ -825,12 +828,12 @@ export default function App() {
       if (freshToken) {
         driveAuthRef.current = true;
         setDriveAuthed(true);
-        console.log("OAuth return: got fresh token");
       }
 
       // Load local data immediately (snappy UX)
-      const local    = localLoad();
+      const local     = localLoad();
       const localChat = localLoadChat();
+      const localCount = local ? Object.keys(local).length : 0;
       setPlants(local || initPlants());
       if (localChat) setChatMsgs(localChat);
 
@@ -843,16 +846,53 @@ export default function App() {
         try {
           const data = await driveRead();
           if (data?.plants) {
-            setPlants(data.plants);
-            if (data.chat) setChatMsgs(data.chat);
-            localSave(data.plants);
+            const driveCount = Object.keys(data.plants).length;
+            const driveTime  = data.savedAt ? new Date(data.savedAt).getTime() : 0;
+            // Get the timestamp of local data
+            let localTime = 0;
+            try {
+              const keys = ["happyroots-plants","hr-session","hoya-plants-stable"];
+              for (const k of keys) {
+                const raw = localStorage.getItem(k);
+                if (raw) {
+                  const parsed = JSON.parse(raw);
+                  const t = parsed?.savedAt ? new Date(parsed.savedAt).getTime() : 0;
+                  if (t > localTime) localTime = t;
+                }
+              }
+            } catch {}
+
+            // ── Merge logic ────────────────────────────────────────────────
+            // Most recently saved version wins.
+            // Exception: if this is a brand-new device (no local savedAt),
+            // always load from Drive — it's the source of truth.
+            const isNewDevice = localTime === 0;
+            const driveWins   = isNewDevice || driveTime > localTime;
+
+            if (driveWins) {
+              setPlants(data.plants);
+              if (data.chat) setChatMsgs(data.chat);
+              localSave(data.plants);
+              const n = driveCount;
+              if (freshToken) showToast("☁️ Connected! " + n + " plants loaded");
+              else if (driveTime > localTime) showToast("☁️ Drive has newer data — " + n + " plants loaded");
+            } else {
+              // Local is newer — push it up to Drive
+              if (local) {
+                await driveWrite({ plants: local, chat: localChat || [] });
+                showToast("☁️ Connected — your latest " + localCount + " plants saved to Drive");
+              }
+            }
             setDriveStatus("saved");
-            const n = Object.keys(data.plants).length;
-            if (freshToken) showToast("☁️ Connected! " + n + " plants loaded");
-            else console.log("Drive: loaded " + n + " plants");
           } else {
-            setDriveStatus("idle");
-            if (freshToken) showToast("☁️ Drive connected — ready to save");
+            // No Drive file yet — upload whatever we have locally
+            if (local) {
+              await driveWrite({ plants: local, chat: localChat || [] });
+              showToast("☁️ Drive connected — " + localCount + " plants saved");
+            } else {
+              if (freshToken) showToast("☁️ Drive connected — ready to save");
+            }
+            setDriveStatus("saved");
           }
         } catch(e) {
           console.log("Drive load error:", e?.message||e);

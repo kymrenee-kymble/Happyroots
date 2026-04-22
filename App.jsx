@@ -624,23 +624,21 @@ function LogModal({plant,type,onLog,onClose}){
   );
 }
 
-// ── Google Drive — redirect-based OAuth (works on all mobile browsers) ─────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// Google Drive — redirect-based OAuth (works on all browsers incl. mobile Safari)
+// Flow: tap Connect → full-page redirect to Google → sign in → back to app with token
+// ═══════════════════════════════════════════════════════════════════════════════
+
 const GDRIVE_CLIENT_ID = "425465979045-j818osj85725uknva1o0mp0boabvtbrd.apps.googleusercontent.com";
 const GDRIVE_API_KEY   = "AIzaSyA4sN1gHadoYR1fn5V-M8KksiXj138Ke8I";
 const GDRIVE_SCOPE     = "https://www.googleapis.com/auth/drive.appdata";
 const GDRIVE_FILE      = "happyroots-data.json";
-const REDIRECT_URI     = window.location.origin;
 
-let _gapiReady  = false;
+let _gapiReady   = false;
 let _accessToken = null;
 
-function saveToken(token, expiresIn) {
-  const exp = Date.now() + (expiresIn - 60) * 1000;
-  try { localStorage.setItem("hr-token", JSON.stringify({ token, exp })); } catch {}
-  _accessToken = token;
-}
-
-function loadToken() {
+// ── Token management ──────────────────────────────────────────────────────────
+function getStoredToken() {
   if (_accessToken) return _accessToken;
   try {
     const raw = localStorage.getItem("hr-token");
@@ -652,119 +650,111 @@ function loadToken() {
   return null;
 }
 
-// Redirect to Google OAuth — works on Safari iOS, no popup needed
+function storeToken(token, expiresIn) {
+  _accessToken = token;
+  // Refresh 10 minutes before expiry so we never hit the window mid-session
+  const exp = Date.now() + (expiresIn - 600) * 1000;
+  try { localStorage.setItem("hr-token", JSON.stringify({ token, exp })); } catch {}
+  try { localStorage.setItem("hr-authed", "1"); } catch {}
+}
+
+// ── OAuth redirect ────────────────────────────────────────────────────────────
 function startOAuthRedirect() {
-  try { localStorage.setItem("hr-oauth-pending", "1"); } catch {}
   const params = new URLSearchParams({
-    client_id: GDRIVE_CLIENT_ID,
-    redirect_uri: REDIRECT_URI,
-    response_type: "token",
-    scope: GDRIVE_SCOPE,
+    client_id:              GDRIVE_CLIENT_ID,
+    redirect_uri:           window.location.origin + "/",
+    response_type:          "token",
+    scope:                  GDRIVE_SCOPE,
     include_granted_scopes: "true",
   });
-  window.location.href = "https://accounts.google.com/o/oauth2/v2/auth?" + params.toString();
+  window.location.href = "https://accounts.google.com/o/oauth2/v2/auth?" + params;
 }
 
-// Call on app load — picks up token from URL hash after redirect back
+// Call on every app load — extracts token from URL hash if returning from Google
 function handleOAuthReturn() {
-  const hash = window.location.hash;
-  if (!hash || !hash.includes("access_token")) return null;
-  const params = new URLSearchParams(hash.slice(1));
-  const token = params.get("access_token");
-  const expiresIn = parseInt(params.get("expires_in") || "3600");
-  if (token) {
-    saveToken(token, expiresIn);
-    try {
-      localStorage.setItem("hr-drive-authed", "1");
-      localStorage.removeItem("hr-oauth-pending");
-    } catch {}
-    window.history.replaceState({}, document.title, window.location.pathname);
-    return token;
-  }
-  return null;
+  if (!window.location.hash.includes("access_token")) return null;
+  const p = new URLSearchParams(window.location.hash.slice(1));
+  const token = p.get("access_token");
+  const exp   = parseInt(p.get("expires_in") || "3599");
+  if (!token) return null;
+  storeToken(token, exp);
+  // Clean token from URL so it's not visible / accidentally re-used
+  window.history.replaceState({}, "", window.location.pathname);
+  return token;
 }
 
-async function getAccessToken() {
-  const token = loadToken();
-  if (token) return token;
-  // Token expired — trigger redirect to re-auth
-  startOAuthRedirect();
-  await new Promise(() => {}); // never resolves — redirect will happen
-  return null;
-}
-
-function loadGapiScript() {
-  return new Promise(resolve => {
-    if (window.gapi) { resolve(); return; }
+// ── GAPI ──────────────────────────────────────────────────────────────────────
+function loadScript(src) {
+  return new Promise(r => {
     const s = document.createElement("script");
-    s.src = "https://apis.google.com/js/api.js";
-    s.onload = resolve;
+    s.src = src; s.onload = r;
     document.head.appendChild(s);
   });
 }
 
 async function initGapi() {
   if (_gapiReady) return;
-  await loadGapiScript();
-  await new Promise(resolve => window.gapi.load("client", resolve));
+  if (!window.gapi) await loadScript("https://apis.google.com/js/api.js");
+  await new Promise(r => window.gapi.load("client", r));
   await window.gapi.client.init({
     apiKey: GDRIVE_API_KEY,
-    discoveryDocs: ["https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"]
+    discoveryDocs: ["https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"],
   });
   _gapiReady = true;
 }
-async function driveReadFile() {
+
+// ── Drive file operations ─────────────────────────────────────────────────────
+async function driveRead() {
   await initGapi();
-  const token = await getAccessToken();
-  // Find file in appDataFolder
+  const token = getStoredToken();
+  if (!token) throw new Error("no token");
+  window.gapi.client.setToken({ access_token: token });
   const list = await window.gapi.client.drive.files.list({
     spaces: "appDataFolder",
-    q: `name = '${GDRIVE_FILE}'`,
-    fields: "files(id,name,modifiedTime)",
+    q: `name='${GDRIVE_FILE}'`,
+    fields: "files(id)",
   });
   const files = list.result.files || [];
   if (!files.length) return null;
-  const fileId = files[0].id;
-  const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
+  const resp = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${files[0].id}?alt=media`,
+    { headers: { Authorization: "Bearer " + token } }
+  );
   if (!resp.ok) return null;
   return await resp.json();
 }
 
-async function driveWriteFile(payload) {
+async function driveWrite(payload) {
   await initGapi();
-  const token = await getAccessToken();
+  const token = getStoredToken();
+  if (!token) { console.log("driveWrite: no token"); return; }
+  window.gapi.client.setToken({ access_token: token });
   const body = JSON.stringify({ ...payload, savedAt: new Date().toISOString() });
-
-  // Check if file already exists
   const list = await window.gapi.client.drive.files.list({
     spaces: "appDataFolder",
-    q: `name = '${GDRIVE_FILE}'`,
+    q: `name='${GDRIVE_FILE}'`,
     fields: "files(id)",
   });
   const files = list.result.files || [];
-
   if (files.length) {
-    // Update existing file
     await fetch(`https://www.googleapis.com/upload/drive/v3/files/${files[0].id}?uploadType=media`, {
       method: "PATCH",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
       body,
     });
   } else {
-    // Create new file in appDataFolder
     const meta = JSON.stringify({ name: GDRIVE_FILE, parents: ["appDataFolder"] });
     const form = new FormData();
     form.append("metadata", new Blob([meta], { type: "application/json" }));
     form.append("file",     new Blob([body], { type: "application/json" }));
     await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: "Bearer " + token },
       body: form,
     });
   }
 }
+
 
 export default function App() {
   const [plants,setPlants]           = useState(null);
@@ -780,100 +770,130 @@ export default function App() {
   const [chatInput,setChatInput]     = useState("");
   const [chatLoading,setChatLoading] = useState(false);
   const [toast,setToast]             = useState({msg:"",visible:false});
-  const [driveStatus,setDriveStatus] = useState("idle"); // idle | connecting | syncing | saved | error
+  const [driveStatus,setDriveStatus] = useState("idle");
   const [driveAuthed,setDriveAuthed] = useState(false);
   const [showDataMenu,setShowDataMenu] = useState(false);
-  const chatEnd = useRef(null);
-  const saveTimer = useRef(null);
-  const importRef = useRef(null);
-  const driveAuthedRef = useRef(false); // ref so persist closure never goes stale
+  const chatEnd    = useRef(null);
+  const saveTimer  = useRef(null);
+  const importRef  = useRef(null);
+  const driveAuthRef = useRef(false);
+  const isFirstLoad  = useRef(true);
 
+  const showToast = (msg) => {
+    setToast({msg, visible:true});
+    setTimeout(() => setToast(t => ({...t, visible:false})), 2800);
+  };
 
+  // ── Local storage helpers ─────────────────────────────────────────────────
+  const SKEY = "happyroots-plants";
 
-  const showToast = msg => { setToast({msg,visible:true}); setTimeout(()=>setToast(t=>({...t,visible:false})),2800); };
-
-  // ── Stable local storage keys — never change these ────────────────────────
-  const PLANTS_KEY  = "hoya-plants-stable";
-  const CHAT_KEY    = "hoya-chat-stable";
-  const LEGACY_KEYS = ["hoya-v5","hoya-v4","hoya-v3"];
-  const LEGACY_CHAT = ["hoya-v5-chat","hoya-v4-chat","hoya-v3-chat"];
-
-  function readLocal() {
-    const allKeys = ["hr-session","hoya-plants-stable","hoya-v5","hoya-v4","hoya-v3"];
-    for (const k of allKeys) {
-      try {
-        const raw = localStorage.getItem(k);
-        if (!raw) { console.log("key " + k + ": not found"); continue; }
-        const parsed = JSON.parse(raw);
-        const plants = (parsed && parsed.plants && typeof parsed.plants === "object") ? parsed.plants : parsed;
-        if (plants && typeof plants === "object" && !Array.isArray(plants) && Object.keys(plants).length > 0) {
-          console.log("✓ loaded " + Object.keys(plants).length + " plants from: " + k);
-          if (k !== "hoya-plants-stable") {
-            localStorage.setItem("hoya-plants-stable", JSON.stringify({ plants, savedAt: new Date().toISOString() }));
-            console.log("migrated to stable key");
-          }
-          return plants;
-        } else {
-          console.log("key " + k + ": empty/invalid");
-        }
-      } catch(e) {
-        console.log("key " + k + " error: " + String(e));
-      }
-    }
-    return null;
+  function localSave(p) {
+    const savedAt = new Date().toISOString();
+    const payload = JSON.stringify({ plants:p, savedAt });
+    try { localStorage.setItem(SKEY, payload); } catch {}
+    try { localStorage.setItem("happyroots-plants", payload); } catch {}
+    try { localStorage.setItem("hr-session", payload); } catch {}
+    try { localStorage.setItem("hoya-plants-stable", payload); } catch {}
   }
 
-  function readLocalChat() {
-    const allChatKeys = ["hoya-chat-stable","hoya-v5-chat","hoya-v4-chat","hoya-v3-chat"];
-    for (const k of allChatKeys) {
+  function localLoad() {
+    const keys = [SKEY, "hr-session", "hoya-plants-stable", "hoya-v5", "hoya-v4", "hoya-v3"];
+    for (const k of keys) {
       try {
         const raw = localStorage.getItem(k);
-        if (raw) {
-          const d = JSON.parse(raw);
-          if (k !== "hoya-chat-stable") localStorage.setItem("hoya-chat-stable", raw);
-          return d;
-        }
+        if (!raw) continue;
+        const parsed = JSON.parse(raw);
+        const p = parsed?.plants || parsed;
+        if (p && typeof p === "object" && !Array.isArray(p) && Object.keys(p).length > 0) return p;
       } catch {}
     }
     return null;
   }
 
-  // Load on mount: handle OAuth return, then load data
+  function localLoadChat() {
+    try {
+      const keys = ["happyroots-chat","hoya-chat-stable","hoya-v5-chat"];
+      for (const k of keys) {
+        const r = localStorage.getItem(k);
+        if (r) return JSON.parse(r);
+      }
+    } catch {}
+    return null;
+  }
+
+  // ── On mount: handle OAuth return, load data, try Drive ──────────────────
   useEffect(()=>{
     (async()=>{
-      // 1. Check if returning from Google OAuth redirect
-      const returnToken = handleOAuthReturn();
-      if (returnToken) {
-        console.log("✓ OAuth complete, got token");
-        setDriveAuthed(true); driveAuthedRef.current = true;
+      // Did we just return from Google OAuth?
+      const freshToken = handleOAuthReturn();
+      if (freshToken) {
+        driveAuthRef.current = true;
+        setDriveAuthed(true);
       }
 
-      // 2. Load session cache immediately so app is usable
-      const local = readLocal();
-      const localChat = readLocalChat();
+      // Load local data immediately (snappy UX)
+      const local     = localLoad();
+      const localChat = localLoadChat();
+      const localCount = local ? Object.keys(local).length : 0;
       setPlants(local || initPlants());
       if (localChat) setChatMsgs(localChat);
 
-      // 3. Try Drive if we have any token
-      const tok = returnToken || loadToken();
-      if (tok) {
+      // Try Drive if we have any token
+      const token = getStoredToken();
+      if (token) {
+        driveAuthRef.current = true;
+        setDriveAuthed(true);
         setDriveStatus("connecting");
         try {
-          const driveData = await driveReadFile();
-          if (driveData?.plants) {
-            setPlants(driveData.plants);
-            if (driveData.chat) setChatMsgs(driveData.chat);
-            try { localStorage.setItem("hr-session", JSON.stringify({ plants: driveData.plants, savedAt: driveData.savedAt })); } catch {}
-            setDriveAuthed(true); driveAuthedRef.current = true;
-            try { localStorage.setItem("hr-drive-authed","1"); } catch {}
+          const data = await driveRead();
+          if (data?.plants) {
+            const driveCount = Object.keys(data.plants).length;
+            const driveTime  = data.savedAt ? new Date(data.savedAt).getTime() : 0;
+            // Get the timestamp of local data
+            let localTime = 0;
+            try {
+              const keys = ["happyroots-plants","hr-session","hoya-plants-stable"];
+              for (const k of keys) {
+                const raw = localStorage.getItem(k);
+                if (raw) {
+                  const parsed = JSON.parse(raw);
+                  const t = parsed?.savedAt ? new Date(parsed.savedAt).getTime() : 0;
+                  if (t > localTime) localTime = t;
+                }
+              }
+            } catch {}
+
+            // ── Merge logic ────────────────────────────────────────────────
+            // Most recently saved version wins.
+            // Exception: if this is a brand-new device (no local savedAt),
+            // always load from Drive — it's the source of truth.
+            const isNewDevice = localTime === 0;
+            const driveWins   = isNewDevice || driveTime > localTime;
+
+            if (driveWins) {
+              setPlants(data.plants);
+              if (data.chat) setChatMsgs(data.chat);
+              localSave(data.plants);
+              const n = driveCount;
+              if (freshToken) showToast("☁️ Connected! " + n + " plants loaded");
+              else if (driveTime > localTime) showToast("☁️ Drive has newer data — " + n + " plants loaded");
+            } else {
+              // Local is newer — push it up to Drive
+              if (local) {
+                await driveWrite({ plants: local, chat: localChat || [] });
+                showToast("☁️ Connected — your latest " + localCount + " plants saved to Drive");
+              }
+            }
             setDriveStatus("saved");
-            const n = Object.keys(driveData.plants).length;
-            if (returnToken) showToast("☁️ Connected! " + n + " plants loaded");
-            else console.log("Drive loaded " + n + " plants");
           } else {
-            setDriveAuthed(true); driveAuthedRef.current = true;
-            setDriveStatus("idle");
-            if (returnToken) showToast("☁️ Drive connected — ready to save");
+            // No Drive file yet — upload whatever we have locally
+            if (local) {
+              await driveWrite({ plants: local, chat: localChat || [] });
+              showToast("☁️ Drive connected — " + localCount + " plants saved");
+            } else {
+              if (freshToken) showToast("☁️ Drive connected — ready to save");
+            }
+            setDriveStatus("saved");
           }
         } catch(e) {
           console.log("Drive load error:", e?.message||e);
@@ -881,55 +901,53 @@ export default function App() {
         }
       } else {
         setDriveStatus("disconnected");
-        console.log("No token — connect Drive to save data");
       }
     })();
   },[]);
 
-  // Connect to Drive manually (triggers Google OAuth popup)
+  // ── Connect Drive (redirect flow — works on all mobile browsers) ────────────
   function connectDrive() {
-    // Save session data before redirect so nothing is lost
-    try {
-      if (plants) localStorage.setItem("hr-session", JSON.stringify({ plants, savedAt: new Date().toISOString() }));
-    } catch {}
-    showToast("Redirecting to Google sign-in…");
-    setTimeout(() => startOAuthRedirect(), 800);
+    // Save anything in memory before we navigate away
+    if (plants) localSave(plants);
+    showToast("Taking you to Google sign-in…");
+    setTimeout(() => startOAuthRedirect(), 700);
   }
 
-  // Debounced persist: local immediately, Drive 2s later
+  // ── Persist: save locally always, Drive 2s after last change ───────────────
+  // If the token has expired, saves the pending data to localStorage and
+  // triggers a re-auth redirect. On return the load useEffect detects local
+  // is newer than Drive and pushes it up automatically.
   const persist = useCallback(async (p, chat) => {
     if (!p || typeof p !== "object") return;
-    const saved = { plants: p, savedAt: new Date().toISOString() };
-    // ── Local save ────────────────────────────────────────────────────────────
-    try {
-      const json = JSON.stringify(saved);
-      localStorage.setItem("hr-session", json);
-      localStorage.setItem("hoya-plants-stable", json);
-      // Verify immediately
-      const verify = localStorage.getItem(KEY);
-      if (verify) {
-        const vp = JSON.parse(verify);
-        const count = vp?.plants ? Object.keys(vp.plants).length : "?";
-
-    } catch(e) {
-      console.log("✗ local save FAILED: " + String(e));
+    // Always save locally first — this is the safety net
+    localSave(p);
+    try { localStorage.setItem("happyroots-chat", JSON.stringify((chat||[]).slice(-40))); } catch {}
+    // Check token
+    const token = getStoredToken();
+    if (!token) {
+      // Token expired — mark disconnected but data is safe in localStorage
+      // User will need to reconnect; on reconnect the load useEffect will
+      // detect local is newer and push it up to Drive automatically
+      setDriveStatus("disconnected");
+      showToast("⚠️ Drive token expired — tap Reconnect Drive to re-sync");
+      return;
     }
-    // ── Drive save (debounced 2s) ────────────────────────────────────────────
-    const tok = loadToken();
-    if (!tok) { setDriveStatus("disconnected"); return; }
+    if (!driveAuthRef.current) { driveAuthRef.current = true; setDriveAuthed(true); }
     if (saveTimer.current) clearTimeout(saveTimer.current);
     setDriveStatus("syncing");
     saveTimer.current = setTimeout(async () => {
       try {
-        await driveWriteFile({ plants: p, chat: (chat||[]).slice(-40), savedAt: saved.savedAt });
+        await driveWrite({ plants:p, chat:(chat||[]).slice(-40) });
         setDriveStatus("saved");
-        console.log("✓ Drive saved");
       } catch(e) {
-        console.log("✗ Drive save FAILED: " + e);
+        console.log("Drive write error:", e?.message||e);
+        // Save to local so nothing is lost — user can reconnect to re-sync
+        localSave(p);
         setDriveStatus("error");
+        showToast("⚠️ Drive save failed — data saved locally. Tap Reconnect Drive");
       }
-    }, 4000);
-  }, []);
+    }, 2000);
+  }, [showToast]);
 
   useEffect(()=>{
     if(!plants) return;
@@ -950,11 +968,10 @@ export default function App() {
   // ── Auto-save whenever plants changes ─────────────────────────────────────
   // This is the canonical React pattern: derive saves from state, not from event handlers.
   // The isFirstLoad ref prevents saving the initial load back over itself.
-  const isFirstLoad = useRef(true);
+  // Auto-save on every plants change
   useEffect(()=>{
     if(!plants) return;
     if(isFirstLoad.current){ isFirstLoad.current = false; return; }
-    console.log("plants changed → persist " + Object.keys(plants).length + " plants");
     persist(plants, chatMsgs);
   },[plants]);
 
@@ -1170,7 +1187,12 @@ export default function App() {
               {driveStatus==="syncing"       && <span style={{color:"#a09060",fontSize:9.5,animation:"pulse 1.4s infinite"}}>☁️ saving…</span>}
               {driveStatus==="saved"         && <span style={{color:"#8abd80",fontSize:9.5}}>☁️ Drive synced</span>}
               {driveStatus==="error"         && <span style={{color:"#e07050",fontSize:9.5}} title="Drive error — data saved locally">⚠️ local only</span>}
-              {(driveStatus==="disconnected"||driveStatus==="idle") && !driveAuthed && (
+              {(driveStatus==="disconnected"||driveStatus==="error") && (
+                <button onClick={connectDrive} style={{fontSize:10,color:"#fff",background:TERRA,border:"none",borderRadius:10,padding:"3px 12px",fontFamily:FONT,cursor:"pointer",fontWeight:600}}>
+                  ☁️ Reconnect Drive
+                </button>
+              )}
+              {driveStatus==="idle" && !driveAuthed && (
                 <button onClick={connectDrive} style={{fontSize:10,color:"#fff",background:TERRA,border:"none",borderRadius:10,padding:"3px 12px",fontFamily:FONT,cursor:"pointer",fontWeight:600}}>
                   ☁️ Connect Drive
                 </button>
@@ -1221,7 +1243,7 @@ export default function App() {
       {/* TODAY */}
       {view==="today" && (
         <div style={{padding:"16px 16px 0"}}>
-          {!driveAuthed && driveStatus !== "connecting" && (
+          {(driveStatus === "disconnected" || driveStatus === "error") && (
             <div style={{background:`${TERRA}10`,border:`1px solid ${TERRA}30`,borderRadius:12,padding:"14px 16px",marginBottom:16,display:"flex",alignItems:"center",gap:12}}>
               <span style={{fontSize:24}}>☁️</span>
               <div style={{flex:1}}>
@@ -1388,7 +1410,6 @@ export default function App() {
       {view!=="chat"&&(
         <button onClick={()=>setAddModal(true)} style={{position:"fixed",bottom:22,right:20,width:52,height:52,borderRadius:"50%",background:SAGE,border:`1.5px solid ${SAGE_D}`,fontSize:22,boxShadow:"0 4px 20px rgba(90,107,80,0.35)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",zIndex:40}} title="Add plant">＋</button>
       )}
-
 
       {detailPlant&&plants[detailPlant]&&(
         <PlantSheet name={detailPlant} plant={plants[detailPlant]}

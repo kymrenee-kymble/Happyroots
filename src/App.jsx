@@ -36,8 +36,8 @@ const STARTER_PLANTS = [
 const CARE = {
   water:    { label:"Water + Ferts",  icon:"💧", hue:"196", defaultDays:10,
               action:"Water thoroughly with Foliage Pro & Hydroguard (diluted). Check soil visually — water only when mix is dry.", scheduled:true },
-  flush:    { label:"Flush",          icon:"🚿", hue:"258", defaultDays:30,
-              action:"Plain water only — no fertilizer. Flush until water runs freely from the bottom to clear salt buildup.", scheduled:true },
+  flush:    { label:"Flush (replaces Water)",  icon:"🚿", hue:"258", defaultDays:30,
+              action:"Plain water only today — skip Foliage Pro & Hydroguard. Flush until water runs freely from the bottom to clear salt buildup.", scheduled:true },
   topdress: { label:"Top Dress",      icon:"🪱", hue:"32",  defaultDays:30,
               action:"Apply a thin layer of earthworm castings to the soil surface. No watering needed immediately after.", scheduled:true },
   foliar:   { label:"Foliar Spray",   icon:"🌿", hue:"88",  defaultDays:14,
@@ -142,7 +142,46 @@ function buildTasks(plants) {
   const today = todayStr();
   const tasks = [];
   Object.entries(plants).forEach(([name, p]) => {
-    Object.keys(CARE).filter(t=>CARE[t].scheduled).forEach(type => {
+    // ── Water vs Flush logic ─────────────────────────────────────────────────
+    // Flush replaces the next Water+Ferts session when:
+    //   - A watering is due (or overdue), AND
+    //   - It's been 30+ days since the last flush
+    // It does NOT appear as a separate task on top of watering.
+
+    const waterThreshold = effectiveInterval(p, "water");
+    const waterLast = lastLogOf(p, "water");
+    const waterAge  = daysSince(waterLast);
+    const flushThreshold = effectiveInterval(p, "flush");
+    const flushLast = lastLogOf(p, "flush");
+    const flushAge  = daysSince(flushLast);
+
+    const waterDue    = waterAge !== null && waterAge >= waterThreshold;
+    const waterLogged = waterLast && new Date(waterLast).toDateString() === today;
+    const flushDue    = flushAge === null || flushAge >= flushThreshold; // never flushed, or overdue
+    const flushDeferred = p.deferred?.["flush"] && new Date(p.deferred["flush"]) > new Date() && new Date(p.deferred["flush"]).toDateString() !== today;
+    const waterDeferred = p.deferred?.["water"] && new Date(p.deferred["water"]) > new Date() && new Date(p.deferred["water"]).toDateString() !== today;
+
+    if (!waterLogged && !waterDeferred) {
+      if (waterDue && flushDue && !flushDeferred) {
+        // Flush replaces water this session
+        const flushLogged = flushLast && new Date(flushLast).toDateString() === today;
+        if (!flushLogged) {
+          const overdue = waterAge > waterThreshold;
+          tasks.push({ id:`${name}::flush`, plant:name, type:"flush", age:waterAge, threshold:waterThreshold,
+            last:flushLast, overdue, due:true, upcoming:false, neverLogged:false, replacesWater:true });
+        }
+      } else if (waterDue || (waterAge !== null && waterAge >= waterThreshold * 0.75)) {
+        // Regular water+ferts
+        const overdue  = waterAge !== null && waterAge > waterThreshold;
+        const due      = waterAge !== null && waterAge >= waterThreshold;
+        const upcoming = !due && waterAge !== null && waterAge >= waterThreshold * 0.75;
+        tasks.push({ id:`${name}::water`, plant:name, type:"water", age:waterAge, threshold:waterThreshold,
+          last:waterLast, overdue, due, upcoming, neverLogged:false });
+      }
+    }
+
+    // ── All other scheduled types (topdress, foliar) — unchanged logic ───────
+    ["topdress","foliar"].forEach(type => {
       const threshold = effectiveInterval(p, type);
       const last = lastLogOf(p, type);
       const age  = daysSince(last);
@@ -152,7 +191,7 @@ function buildTasks(plants) {
       const overdue  = age!==null && age>threshold;
       const due      = age!==null && age>=threshold;
       const upcoming = !due && age!==null && age>=threshold*0.75;
-      const neverLogged = age===null && type!=="water";
+      const neverLogged = age===null;
       if (overdue||due||upcoming||neverLogged)
         tasks.push({ id:`${name}::${type}`, plant:name, type, age, threshold, last, overdue, due, upcoming, neverLogged });
     });
@@ -168,7 +207,7 @@ const SYSTEM_PROMPT = `You are Kym's personal Hoya care assistant. Kym is an exp
 
 Care routine:
 - Every watering: Foliage Pro + Hydroguard (diluted). Water only when soil visually dry (clear nursery pots, chunky mix).
-- Monthly flush: plain water only, no fertilizer, flush until water runs from drainage.
+- Monthly flush: replaces the next watering session when 30+ days have passed since last flush. Plain water only that day — skip Foliage Pro & Hydroguard. Flush until water runs from drainage.
 - Monthly top dress: thin layer of earthworm castings on soil surface.
 - Foliar spray as needed, not during lights-on hours.
 - Pest treatments logged with product used and next follow-up date.
@@ -503,18 +542,20 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename}){
             <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:1.8,marginBottom:9,fontWeight:600,fontFamily:SERIF,fontStyle:"italic"}}>Care History</div>
             <div style={{display:"flex",flexDirection:"column",gap:6}}>
               {logs.map((l,i)=>{
-                const meta = l.note && typeof l.note==="object" ? l.note : null;
-                const noteStr = typeof l.note==="string" ? l.note : null;
+                // Support both old format (l.note as object) and new flat format
+                const product  = l.product || l.note?.product  || "";
+                const nextDate = l.nextDate|| l.note?.nextDate || "";
+                const noteText = typeof l.note==="string" ? l.note : (l.note?.note || "");
                 return (
-                  <div key={i} style={{fontSize:11,color:MUTED,borderLeft:`2px solid ${BORDER}`,paddingLeft:9,marginBottom:3}}>
+                  <div key={i} style={{fontSize:11,color:MUTED,borderLeft:`2px solid ${BORDER}`,paddingLeft:9,marginBottom:6,paddingBottom:4}}>
                     <div style={{display:"flex",gap:8,alignItems:"baseline"}}>
                       <span>{CARE[l.type]?.icon}</span>
                       <span style={{color:INK,fontWeight:600}}>{CARE[l.type]?.label}</span>
                       <span style={{color:MUTED,fontSize:10}}>{fmtDate(l.date)}</span>
                     </div>
-                    {meta?.product&&<div style={{fontSize:10,color:MUTED,marginTop:2}}>Product: {meta.product}</div>}
-                    {meta?.nextDate&&<div style={{fontSize:10,color:SAGE_D,marginTop:2}}>Next due: {fmtDate(meta.nextDate)}</div>}
-                    {(meta?.note||noteStr)&&<div style={{fontSize:10,color:MUTED,fontStyle:"italic",marginTop:2}}>{meta?.note||noteStr}</div>}
+                    {product  && <div style={{fontSize:10.5,color:INK,marginTop:3}}>🧪 {product}</div>}
+                    {nextDate && <div style={{fontSize:10.5,color:SAGE_D,marginTop:2}}>📅 Next treatment: {fmtDate(nextDate)}</div>}
+                    {noteText && <div style={{fontSize:10.5,color:MUTED,fontStyle:"italic",marginTop:2}}>"{noteText}"</div>}
                   </div>
                 );
               })}
@@ -652,7 +693,8 @@ function getStoredToken() {
 
 function storeToken(token, expiresIn) {
   _accessToken = token;
-  const exp = Date.now() + (expiresIn - 120) * 1000;
+  // Refresh 10 minutes before expiry so we never hit the window mid-session
+  const exp = Date.now() + (expiresIn - 600) * 1000;
   try { localStorage.setItem("hr-token", JSON.stringify({ token, exp })); } catch {}
   try { localStorage.setItem("hr-authed", "1"); } catch {}
 }
@@ -913,14 +955,24 @@ export default function App() {
   }
 
   // ── Persist: save locally always, Drive 2s after last change ───────────────
+  // If the token has expired, saves the pending data to localStorage and
+  // triggers a re-auth redirect. On return the load useEffect detects local
+  // is newer than Drive and pushes it up automatically.
   const persist = useCallback(async (p, chat) => {
     if (!p || typeof p !== "object") return;
-    // Always save locally
+    // Always save locally first — this is the safety net
     localSave(p);
     try { localStorage.setItem("happyroots-chat", JSON.stringify((chat||[]).slice(-40))); } catch {}
-    // Drive save if authed
+    // Check token
     const token = getStoredToken();
-    if (!token) { setDriveStatus("disconnected"); return; }
+    if (!token) {
+      // Token expired — mark disconnected but data is safe in localStorage
+      // User will need to reconnect; on reconnect the load useEffect will
+      // detect local is newer and push it up to Drive automatically
+      setDriveStatus("disconnected");
+      showToast("⚠️ Drive token expired — tap Reconnect Drive to re-sync");
+      return;
+    }
     if (!driveAuthRef.current) { driveAuthRef.current = true; setDriveAuthed(true); }
     if (saveTimer.current) clearTimeout(saveTimer.current);
     setDriveStatus("syncing");
@@ -930,10 +982,13 @@ export default function App() {
         setDriveStatus("saved");
       } catch(e) {
         console.log("Drive write error:", e?.message||e);
+        // Save to local so nothing is lost — user can reconnect to re-sync
+        localSave(p);
         setDriveStatus("error");
+        showToast("⚠️ Drive save failed — data saved locally. Tap Reconnect Drive");
       }
     }, 2000);
-  }, []);
+  }, [showToast]);
 
   useEffect(()=>{
     if(!plants) return;
@@ -982,7 +1037,16 @@ export default function App() {
       } else {
         const p = prev[plantName];
         n = { ...prev, [plantName]: { ...p,
-          logs: [...(p.logs||[]), { type, date: new Date().toISOString(), note: typeof extra==="string" ? extra : extra?.note||"", ...(typeof extra==="object" && extra!==null ? {pestData:extra} : {}) }],
+          logs: [...(p.logs||[]), {
+            type,
+            date: new Date().toISOString(),
+            // For pest: store all fields at top level for easy display
+            // For others: store note string directly
+            ...(typeof extra==="object" && extra!==null
+              ? { note: extra.note||"", product: extra.product||"", nextDate: extra.nextDate||"" }
+              : { note: typeof extra==="string" ? extra : "" }
+            )
+          }],
           deferred: { ...(p.deferred||{}), [type]: null },
         }};
         showToast(`${CARE[type].icon} ${CARE[type].label} logged`);
@@ -1173,7 +1237,12 @@ export default function App() {
               {driveStatus==="syncing"       && <span style={{color:"#a09060",fontSize:9.5,animation:"pulse 1.4s infinite"}}>☁️ saving…</span>}
               {driveStatus==="saved"         && <span style={{color:"#8abd80",fontSize:9.5}}>☁️ Drive synced</span>}
               {driveStatus==="error"         && <span style={{color:"#e07050",fontSize:9.5}} title="Drive error — data saved locally">⚠️ local only</span>}
-              {(driveStatus==="disconnected"||driveStatus==="idle") && !driveAuthed && (
+              {(driveStatus==="disconnected"||driveStatus==="error") && (
+                <button onClick={connectDrive} style={{fontSize:10,color:"#fff",background:TERRA,border:"none",borderRadius:10,padding:"3px 12px",fontFamily:FONT,cursor:"pointer",fontWeight:600}}>
+                  ☁️ Reconnect Drive
+                </button>
+              )}
+              {driveStatus==="idle" && !driveAuthed && (
                 <button onClick={connectDrive} style={{fontSize:10,color:"#fff",background:TERRA,border:"none",borderRadius:10,padding:"3px 12px",fontFamily:FONT,cursor:"pointer",fontWeight:600}}>
                   ☁️ Connect Drive
                 </button>
@@ -1224,7 +1293,7 @@ export default function App() {
       {/* TODAY */}
       {view==="today" && (
         <div style={{padding:"16px 16px 0"}}>
-          {!driveAuthed && driveStatus !== "connecting" && (
+          {(driveStatus === "disconnected" || driveStatus === "error") && (
             <div style={{background:`${TERRA}10`,border:`1px solid ${TERRA}30`,borderRadius:12,padding:"14px 16px",marginBottom:16,display:"flex",alignItems:"center",gap:12}}>
               <span style={{fontSize:24}}>☁️</span>
               <div style={{flex:1}}>

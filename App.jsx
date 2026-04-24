@@ -671,7 +671,7 @@ function LogModal({plant,type,onLog,onClose}){
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const GDRIVE_CLIENT_ID = "425465979045-j818osj85725uknva1o0mp0boabvtbrd.apps.googleusercontent.com";
-const GDRIVE_API_KEY   = "AIzaSyA4sN1gHadoYR1fn5V-M8KksiXj138Ke8I";
+const GDRIVE_API_KEY   = import.meta.env.VITE_GOOGLE_API_KEY || "";
 const GDRIVE_SCOPE     = "https://www.googleapis.com/auth/drive.appdata";
 const GDRIVE_FILE      = "happyroots-data.json";
 

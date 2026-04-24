@@ -36,12 +36,12 @@ const STARTER_PLANTS = [
 const CARE = {
   water:    { label:"Water + Ferts",  icon:"💧", hue:"196", defaultDays:10,
               action:"Water thoroughly with Foliage Pro & Hydroguard (diluted). Check soil visually — water only when mix is dry.", scheduled:true },
-  flush:    { label:"Flush",          icon:"🚿", hue:"258", defaultDays:30,
-              action:"Plain water only — no fertilizer. Flush until water runs freely from the bottom to clear salt buildup.", scheduled:true },
+  flush:    { label:"Flush (replaces Water)",  icon:"🚿", hue:"258", defaultDays:30,
+              action:"Plain water only today — skip Foliage Pro & Hydroguard. Flush until water runs freely from the bottom to clear salt buildup.", scheduled:true },
   topdress: { label:"Top Dress",      icon:"🪱", hue:"32",  defaultDays:30,
               action:"Apply a thin layer of earthworm castings to the soil surface. No watering needed immediately after.", scheduled:true },
-  foliar:   { label:"Foliar Spray",   icon:"🌿", hue:"88",  defaultDays:14,
-              action:"Spray foliage as needed. Avoid spraying during lights-on hours.", scheduled:true },
+  foliar:   { label:"Foliar Spray",   icon:"🌿", hue:"88",  defaultDays:null,
+              action:"Spray foliage as needed. Avoid spraying during lights-on hours.", scheduled:false },
   pest:     { label:"Pest Treatment", icon:"🐛", hue:"0",   defaultDays:null,
               action:"Log product used and next follow-up date.", scheduled:false },
   note:     { label:"Note / Observation", icon:"📝", hue:"45", defaultDays:null,
@@ -142,7 +142,46 @@ function buildTasks(plants) {
   const today = todayStr();
   const tasks = [];
   Object.entries(plants).forEach(([name, p]) => {
-    Object.keys(CARE).filter(t=>CARE[t].scheduled).forEach(type => {
+    // ── Water vs Flush logic ─────────────────────────────────────────────────
+    // Flush replaces the next Water+Ferts session when:
+    //   - A watering is due (or overdue), AND
+    //   - It's been 30+ days since the last flush
+    // It does NOT appear as a separate task on top of watering.
+
+    const waterThreshold = effectiveInterval(p, "water");
+    const waterLast = lastLogOf(p, "water");
+    const waterAge  = daysSince(waterLast);
+    const flushThreshold = effectiveInterval(p, "flush");
+    const flushLast = lastLogOf(p, "flush");
+    const flushAge  = daysSince(flushLast);
+
+    const waterDue    = waterAge !== null && waterAge >= waterThreshold;
+    const waterLogged = waterLast && new Date(waterLast).toDateString() === today;
+    const flushDue    = flushAge === null || flushAge >= flushThreshold; // never flushed, or overdue
+    const flushDeferred = p.deferred?.["flush"] && new Date(p.deferred["flush"]) > new Date() && new Date(p.deferred["flush"]).toDateString() !== today;
+    const waterDeferred = p.deferred?.["water"] && new Date(p.deferred["water"]) > new Date() && new Date(p.deferred["water"]).toDateString() !== today;
+
+    if (!waterLogged && !waterDeferred) {
+      if (waterDue && flushDue && !flushDeferred) {
+        // Flush replaces water this session
+        const flushLogged = flushLast && new Date(flushLast).toDateString() === today;
+        if (!flushLogged) {
+          const overdue = waterAge > waterThreshold;
+          tasks.push({ id:`${name}::flush`, plant:name, type:"flush", age:waterAge, threshold:waterThreshold,
+            last:flushLast, overdue, due:true, upcoming:false, neverLogged:false, replacesWater:true });
+        }
+      } else if (waterDue || (waterAge !== null && waterAge >= waterThreshold * 0.75)) {
+        // Regular water+ferts
+        const overdue  = waterAge !== null && waterAge > waterThreshold;
+        const due      = waterAge !== null && waterAge >= waterThreshold;
+        const upcoming = !due && waterAge !== null && waterAge >= waterThreshold * 0.75;
+        tasks.push({ id:`${name}::water`, plant:name, type:"water", age:waterAge, threshold:waterThreshold,
+          last:waterLast, overdue, due, upcoming, neverLogged:false });
+      }
+    }
+
+    // ── All other scheduled types (topdress, foliar) — unchanged logic ───────
+    ["topdress","foliar"].forEach(type => {
       const threshold = effectiveInterval(p, type);
       const last = lastLogOf(p, type);
       const age  = daysSince(last);
@@ -152,7 +191,7 @@ function buildTasks(plants) {
       const overdue  = age!==null && age>threshold;
       const due      = age!==null && age>=threshold;
       const upcoming = !due && age!==null && age>=threshold*0.75;
-      const neverLogged = age===null && type!=="water";
+      const neverLogged = age===null;
       if (overdue||due||upcoming||neverLogged)
         tasks.push({ id:`${name}::${type}`, plant:name, type, age, threshold, last, overdue, due, upcoming, neverLogged });
     });
@@ -168,7 +207,7 @@ const SYSTEM_PROMPT = `You are Kym's personal Hoya care assistant. Kym is an exp
 
 Care routine:
 - Every watering: Foliage Pro + Hydroguard (diluted). Water only when soil visually dry (clear nursery pots, chunky mix).
-- Monthly flush: plain water only, no fertilizer, flush until water runs from drainage.
+- Monthly flush: replaces the next watering session when 30+ days have passed since last flush. Plain water only that day — skip Foliage Pro & Hydroguard. Flush until water runs from drainage.
 - Monthly top dress: thin layer of earthworm castings on soil surface.
 - Foliar spray as needed, not during lights-on hours.
 - Pest treatments logged with product used and next follow-up date.
@@ -503,18 +542,20 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename}){
             <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:1.8,marginBottom:9,fontWeight:600,fontFamily:SERIF,fontStyle:"italic"}}>Care History</div>
             <div style={{display:"flex",flexDirection:"column",gap:6}}>
               {logs.map((l,i)=>{
-                const meta = l.note && typeof l.note==="object" ? l.note : null;
-                const noteStr = typeof l.note==="string" ? l.note : null;
+                // Support both old format (l.note as object) and new flat format
+                const product  = l.product || l.note?.product  || "";
+                const nextDate = l.nextDate|| l.note?.nextDate || "";
+                const noteText = typeof l.note==="string" ? l.note : (l.note?.note || "");
                 return (
-                  <div key={i} style={{fontSize:11,color:MUTED,borderLeft:`2px solid ${BORDER}`,paddingLeft:9,marginBottom:3}}>
+                  <div key={i} style={{fontSize:11,color:MUTED,borderLeft:`2px solid ${BORDER}`,paddingLeft:9,marginBottom:6,paddingBottom:4}}>
                     <div style={{display:"flex",gap:8,alignItems:"baseline"}}>
                       <span>{CARE[l.type]?.icon}</span>
                       <span style={{color:INK,fontWeight:600}}>{CARE[l.type]?.label}</span>
                       <span style={{color:MUTED,fontSize:10}}>{fmtDate(l.date)}</span>
                     </div>
-                    {meta?.product&&<div style={{fontSize:10,color:MUTED,marginTop:2}}>Product: {meta.product}</div>}
-                    {meta?.nextDate&&<div style={{fontSize:10,color:SAGE_D,marginTop:2}}>Next due: {fmtDate(meta.nextDate)}</div>}
-                    {(meta?.note||noteStr)&&<div style={{fontSize:10,color:MUTED,fontStyle:"italic",marginTop:2}}>{meta?.note||noteStr}</div>}
+                    {product  && <div style={{fontSize:10.5,color:INK,marginTop:3}}>🧪 {product}</div>}
+                    {nextDate && <div style={{fontSize:10.5,color:SAGE_D,marginTop:2}}>📅 Next treatment: {fmtDate(nextDate)}</div>}
+                    {noteText && <div style={{fontSize:10.5,color:MUTED,fontStyle:"italic",marginTop:2}}>"{noteText}"</div>}
                   </div>
                 );
               })}
@@ -766,6 +807,7 @@ export default function App() {
   const [logModal,setLogModal]       = useState(null);
   const [addModal,setAddModal]       = useState(false);
   const [search,setSearch]           = useState("");
+  const [sortBy,setSortBy]           = useState("name");
   const [chatMsgs,setChatMsgs]       = useState([]);
   const [chatInput,setChatInput]     = useState("");
   const [chatLoading,setChatLoading] = useState(false);
@@ -996,7 +1038,16 @@ export default function App() {
       } else {
         const p = prev[plantName];
         n = { ...prev, [plantName]: { ...p,
-          logs: [...(p.logs||[]), { type, date: new Date().toISOString(), note: typeof extra==="string" ? extra : extra?.note||"", ...(typeof extra==="object" && extra!==null ? {pestData:extra} : {}) }],
+          logs: [...(p.logs||[]), {
+            type,
+            date: new Date().toISOString(),
+            // For pest: store all fields at top level for easy display
+            // For others: store note string directly
+            ...(typeof extra==="object" && extra!==null
+              ? { note: extra.note||"", product: extra.product||"", nextDate: extra.nextDate||"" }
+              : { note: typeof extra==="string" ? extra : "" }
+            )
+          }],
           deferred: { ...(p.deferred||{}), [type]: null },
         }};
         showToast(`${CARE[type].icon} ${CARE[type].label} logged`);
@@ -1108,7 +1159,7 @@ export default function App() {
     const sys=SYSTEM_PROMPT+(ctx?`\n\nCurrently due/overdue:\n${ctx}`:"");
     try {
       const res=await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",headers:{"Content-Type":"application/json"},
+        method:"POST",headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:sys,
           messages:next.map(m=>({role:m.role,content:m.content}))})
       });
@@ -1142,24 +1193,59 @@ export default function App() {
     return order.map(name => ({ name, tasks: map[name] }));
   };
 
+  const [groupByLoc, setGroupByLoc] = useState(false);
+
+  const groupByPlant = (taskList) => {
+    const map={}, order=[];
+    taskList.forEach(t=>{ if(!map[t.plant]){map[t.plant]=[];order.push(t.plant);} map[t.plant].push(t); });
+    return order.map(name=>({name,tasks:map[name]}));
+  };
+
+  const groupByLocation = (plantGroups) => {
+    const locMap={}, locOrder=[];
+    plantGroups.forEach(g=>{
+      const key=plants[g.name]?.location||"No location set";
+      if(!locMap[key]){locMap[key]=[];locOrder.push(key);}
+      locMap[key].push(g);
+    });
+    return locOrder.map(loc=>({loc,groups:locMap[loc]}));
+  };
+
   const PlantSection = ({color,label,taskList}) => {
     const groups = groupByPlant(taskList);
     if (!groups.length) return null;
+    const isMain = label.includes("Overdue")||label.includes("Due");
+    const renderCards = (grps) => grps.map(({name,tasks:grpTasks})=>(
+      <PlantTaskCard key={name} plantName={name} tasks={grpTasks}
+        onDone={t=>setLogModal({plant:t.plant,type:t.type})}
+        onDefer={(t,d)=>deferTask(t,d)}
+        onOpenPlant={n=>setDetailPlant(n)}
+      />
+    ));
     return (
       <section style={{marginBottom:20}}>
-        <div style={{fontSize:10,color,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>{label} · {groups.length} plant{groups.length!==1?"s":""}</div>
-        <div style={{display:"flex",flexDirection:"column",gap:7}}>
-          {groups.map(({name,tasks:grpTasks})=>(
-            <PlantTaskCard key={name} plantName={name} tasks={grpTasks}
-              onDone={t=>setLogModal({plant:t.plant,type:t.type})}
-              onDefer={(t,d)=>deferTask(t,d)}
-              onOpenPlant={name=>{setDetailPlant(name);}}
-            />
-          ))}
+        <div style={{fontSize:10,color,textTransform:"uppercase",letterSpacing:1.8,marginBottom:9,fontWeight:600,fontFamily:SERIF,fontStyle:"italic",display:"flex",alignItems:"center",gap:8}}>
+          <span>{label} · {groups.length} plant{groups.length!==1?"s":""}</span>
+          {isMain&&<button onClick={()=>setGroupByLoc(v=>!v)} style={{fontSize:9,color:groupByLoc?color:MUTED,background:groupByLoc?`${color}15`:"transparent",border:`1px solid ${groupByLoc?color:BORDER}`,borderRadius:10,padding:"1px 7px",fontFamily:FONT,cursor:"pointer"}}>
+            📍 {groupByLoc?"grouped by room":"group by room"}
+          </button>}
         </div>
+        {groupByLoc&&isMain ? (
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            {groupByLocation(groups).map(({loc,groups:lg})=>(
+              <div key={loc}>
+                <div style={{fontSize:10.5,color:TERRA,fontFamily:SERIF,fontStyle:"italic",marginBottom:7,paddingLeft:2}}>📍 {loc}</div>
+                <div style={{display:"flex",flexDirection:"column",gap:7}}>{renderCards(lg)}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{display:"flex",flexDirection:"column",gap:7}}>{renderCards(groups)}</div>
+        )}
       </section>
     );
   };
+
 
   return (
     <div style={{minHeight:"100vh",background:BG,color:INK,fontFamily:FONT,paddingBottom:84}} onClick={()=>setShowDataMenu(false)}>
@@ -1319,6 +1405,7 @@ export default function App() {
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search your collection…"
               style={{flex:1,background:CARD,border:`1px solid ${BORDER}`,borderRadius:20,padding:"9px 16px",color:INK,fontFamily:FONT,fontSize:12.5}}
             />
+            <button onClick={()=>setSortBy(s=>s==="name"?"location":"name")} style={{background:sortBy==="location"?SAGE:SURF,border:`1px solid ${sortBy==="location"?SAGE_D:BORDER}`,borderRadius:20,padding:"9px 12px",fontSize:11,color:sortBy==="location"?"#fff":MUTED,fontFamily:FONT,flexShrink:0}} title="Sort by location">📍</button>
             <button onClick={()=>setAddModal(true)} style={{background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:20,padding:"9px 16px",fontSize:12,color:"#fff",fontFamily:FONT,fontWeight:600,flexShrink:0}}>
               + Add plant
             </button>
@@ -1333,7 +1420,13 @@ export default function App() {
             ))}
           </div>
           <div style={{display:"flex",flexDirection:"column",gap:4}}>
-            {Object.keys(plants).filter(n=>!search||n.toLowerCase().includes(search.toLowerCase())).sort().map(name=>{
+            {Object.keys(plants).filter(n=>!search||n.toLowerCase().includes(search.toLowerCase())).sort((a,b)=>{
+              if(sortBy==="location"){
+                const la=plants[a]?.location||"zzz", lb=plants[b]?.location||"zzz";
+                return la===lb?a.localeCompare(b):la.localeCompare(lb);
+              }
+              return a.localeCompare(b);
+            }).map(name=>{
               const p=plants[name];
               const dot=type=>{
                 const eff=effectiveInterval(p,type);
@@ -1417,8 +1510,7 @@ export default function App() {
             if(type==="__override__"||type==="__meta__"){
               logCare(name,type,extra);          // silent saves, stay on sheet
             } else {
-              setDetailPlant(null);              // close sheet, open log modal
-              setLogModal({plant:name,type});
+              setLogModal({plant:name,type}); // modal opens on top, sheet stays open
             }
           }}
           onClose={()=>setDetailPlant(null)} onDelete={deletePlant} onSetLocation={setPlantLocation} onRename={renamePlant}

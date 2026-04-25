@@ -40,8 +40,8 @@ const CARE = {
               action:"Plain water only today — skip Foliage Pro & Hydroguard. Flush until water runs freely from the bottom to clear salt buildup.", scheduled:true },
   topdress: { label:"Top Dress",      icon:"🪱", hue:"32",  defaultDays:30,
               action:"Apply a thin layer of earthworm castings to the soil surface. No watering needed immediately after.", scheduled:true },
-  foliar:   { label:"Foliar Spray",   icon:"🌿", hue:"88",  defaultDays:14,
-              action:"Spray foliage as needed. Avoid spraying during lights-on hours.", scheduled:true },
+  foliar:   { label:"Foliar Spray",   icon:"🌿", hue:"88",  defaultDays:null,
+              action:"Spray foliage as needed. Avoid spraying during lights-on hours.", scheduled:false },
   pest:     { label:"Pest Treatment", icon:"🐛", hue:"0",   defaultDays:null,
               action:"Log product used and next follow-up date.", scheduled:false },
   note:     { label:"Note / Observation", icon:"📝", hue:"45", defaultDays:null,
@@ -671,7 +671,7 @@ function LogModal({plant,type,onLog,onClose}){
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const GDRIVE_CLIENT_ID = "425465979045-j818osj85725uknva1o0mp0boabvtbrd.apps.googleusercontent.com";
-const GDRIVE_API_KEY   = "AIzaSyA4sN1gHadoYR1fn5V-M8KksiXj138Ke8I";
+const GDRIVE_API_KEY   = import.meta.env.VITE_GOOGLE_API_KEY || "";
 const GDRIVE_SCOPE     = "https://www.googleapis.com/auth/drive.appdata";
 const GDRIVE_FILE      = "happyroots-data.json";
 
@@ -807,6 +807,7 @@ export default function App() {
   const [logModal,setLogModal]       = useState(null);
   const [addModal,setAddModal]       = useState(false);
   const [search,setSearch]           = useState("");
+  const [sortBy,setSortBy]           = useState("name");
   const [chatMsgs,setChatMsgs]       = useState([]);
   const [chatInput,setChatInput]     = useState("");
   const [chatLoading,setChatLoading] = useState(false);
@@ -1158,7 +1159,7 @@ export default function App() {
     const sys=SYSTEM_PROMPT+(ctx?`\n\nCurrently due/overdue:\n${ctx}`:"");
     try {
       const res=await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",headers:{"Content-Type":"application/json"},
+        method:"POST",headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:sys,
           messages:next.map(m=>({role:m.role,content:m.content}))})
       });
@@ -1192,24 +1193,59 @@ export default function App() {
     return order.map(name => ({ name, tasks: map[name] }));
   };
 
+  const [groupByLoc, setGroupByLoc] = useState(false);
+
+  const groupByPlant = (taskList) => {
+    const map={}, order=[];
+    taskList.forEach(t=>{ if(!map[t.plant]){map[t.plant]=[];order.push(t.plant);} map[t.plant].push(t); });
+    return order.map(name=>({name,tasks:map[name]}));
+  };
+
+  const groupByLocation = (plantGroups) => {
+    const locMap={}, locOrder=[];
+    plantGroups.forEach(g=>{
+      const key=plants[g.name]?.location||"No location set";
+      if(!locMap[key]){locMap[key]=[];locOrder.push(key);}
+      locMap[key].push(g);
+    });
+    return locOrder.map(loc=>({loc,groups:locMap[loc]}));
+  };
+
   const PlantSection = ({color,label,taskList}) => {
     const groups = groupByPlant(taskList);
     if (!groups.length) return null;
+    const isMain = label.includes("Overdue")||label.includes("Due");
+    const renderCards = (grps) => grps.map(({name,tasks:grpTasks})=>(
+      <PlantTaskCard key={name} plantName={name} tasks={grpTasks}
+        onDone={t=>setLogModal({plant:t.plant,type:t.type})}
+        onDefer={(t,d)=>deferTask(t,d)}
+        onOpenPlant={n=>setDetailPlant(n)}
+      />
+    ));
     return (
       <section style={{marginBottom:20}}>
-        <div style={{fontSize:10,color,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>{label} · {groups.length} plant{groups.length!==1?"s":""}</div>
-        <div style={{display:"flex",flexDirection:"column",gap:7}}>
-          {groups.map(({name,tasks:grpTasks})=>(
-            <PlantTaskCard key={name} plantName={name} tasks={grpTasks}
-              onDone={t=>setLogModal({plant:t.plant,type:t.type})}
-              onDefer={(t,d)=>deferTask(t,d)}
-              onOpenPlant={name=>{setDetailPlant(name);}}
-            />
-          ))}
+        <div style={{fontSize:10,color,textTransform:"uppercase",letterSpacing:1.8,marginBottom:9,fontWeight:600,fontFamily:SERIF,fontStyle:"italic",display:"flex",alignItems:"center",gap:8}}>
+          <span>{label} · {groups.length} plant{groups.length!==1?"s":""}</span>
+          {isMain&&<button onClick={()=>setGroupByLoc(v=>!v)} style={{fontSize:9,color:groupByLoc?color:MUTED,background:groupByLoc?`${color}15`:"transparent",border:`1px solid ${groupByLoc?color:BORDER}`,borderRadius:10,padding:"1px 7px",fontFamily:FONT,cursor:"pointer"}}>
+            📍 {groupByLoc?"grouped by room":"group by room"}
+          </button>}
         </div>
+        {groupByLoc&&isMain ? (
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            {groupByLocation(groups).map(({loc,groups:lg})=>(
+              <div key={loc}>
+                <div style={{fontSize:10.5,color:TERRA,fontFamily:SERIF,fontStyle:"italic",marginBottom:7,paddingLeft:2}}>📍 {loc}</div>
+                <div style={{display:"flex",flexDirection:"column",gap:7}}>{renderCards(lg)}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{display:"flex",flexDirection:"column",gap:7}}>{renderCards(groups)}</div>
+        )}
       </section>
     );
   };
+
 
   return (
     <div style={{minHeight:"100vh",background:BG,color:INK,fontFamily:FONT,paddingBottom:84}} onClick={()=>setShowDataMenu(false)}>
@@ -1369,6 +1405,7 @@ export default function App() {
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search your collection…"
               style={{flex:1,background:CARD,border:`1px solid ${BORDER}`,borderRadius:20,padding:"9px 16px",color:INK,fontFamily:FONT,fontSize:12.5}}
             />
+            <button onClick={()=>setSortBy(s=>s==="name"?"location":"name")} style={{background:sortBy==="location"?SAGE:SURF,border:`1px solid ${sortBy==="location"?SAGE_D:BORDER}`,borderRadius:20,padding:"9px 12px",fontSize:11,color:sortBy==="location"?"#fff":MUTED,fontFamily:FONT,flexShrink:0}} title="Sort by location">📍</button>
             <button onClick={()=>setAddModal(true)} style={{background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:20,padding:"9px 16px",fontSize:12,color:"#fff",fontFamily:FONT,fontWeight:600,flexShrink:0}}>
               + Add plant
             </button>
@@ -1383,7 +1420,13 @@ export default function App() {
             ))}
           </div>
           <div style={{display:"flex",flexDirection:"column",gap:4}}>
-            {Object.keys(plants).filter(n=>!search||n.toLowerCase().includes(search.toLowerCase())).sort().map(name=>{
+            {Object.keys(plants).filter(n=>!search||n.toLowerCase().includes(search.toLowerCase())).sort((a,b)=>{
+              if(sortBy==="location"){
+                const la=plants[a]?.location||"zzz", lb=plants[b]?.location||"zzz";
+                return la===lb?a.localeCompare(b):la.localeCompare(lb);
+              }
+              return a.localeCompare(b);
+            }).map(name=>{
               const p=plants[name];
               const dot=type=>{
                 const eff=effectiveInterval(p,type);
@@ -1467,8 +1510,7 @@ export default function App() {
             if(type==="__override__"||type==="__meta__"){
               logCare(name,type,extra);          // silent saves, stay on sheet
             } else {
-              setDetailPlant(null);              // close sheet, open log modal
-              setLogModal({plant:name,type});
+              setLogModal({plant:name,type}); // modal opens on top, sheet stays open
             }
           }}
           onClose={()=>setDetailPlant(null)} onDelete={deletePlant} onSetLocation={setPlantLocation} onRename={renamePlant}

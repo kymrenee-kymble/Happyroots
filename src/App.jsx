@@ -815,6 +815,7 @@ export default function App() {
   const [driveStatus,setDriveStatus] = useState("idle");
   const [driveAuthed,setDriveAuthed] = useState(false);
   const [showDataMenu,setShowDataMenu] = useState(false);
+  const [groupByLoc,setGroupByLoc]     = useState(false);
   const chatEnd    = useRef(null);
   const saveTimer  = useRef(null);
   const importRef  = useRef(null);
@@ -1181,8 +1182,6 @@ export default function App() {
   const overdueCt=tasks.filter(t=>t.overdue).length;
   const dueCt=tasks.filter(t=>t.due&&!t.overdue).length;
   const upcomingCt=tasks.filter(t=>t.upcoming||t.neverLogged).length;
-
-  const [groupByLoc, setGroupByLoc] = useState(false);
 
   const groupByPlant = (taskList) => {
     const map={}, order=[];

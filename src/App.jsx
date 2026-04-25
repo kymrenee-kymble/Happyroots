@@ -1182,17 +1182,6 @@ export default function App() {
   const dueCt=tasks.filter(t=>t.due&&!t.overdue).length;
   const upcomingCt=tasks.filter(t=>t.upcoming||t.neverLogged).length;
 
-  // Group flat task list by plant name, preserving sort order of first occurrence
-  const groupByPlant = (taskList) => {
-    const map = {};
-    const order = [];
-    taskList.forEach(t => {
-      if (!map[t.plant]) { map[t.plant] = []; order.push(t.plant); }
-      map[t.plant].push(t);
-    });
-    return order.map(name => ({ name, tasks: map[name] }));
-  };
-
   const [groupByLoc, setGroupByLoc] = useState(false);
 
   const groupByPlant = (taskList) => {

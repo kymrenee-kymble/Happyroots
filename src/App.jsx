@@ -959,7 +959,7 @@ export default function App() {
             } else {
               // Local is newer — push it up to Drive
               if (local) {
-                await driveWrite({ plants: local, chat: localChat || [] });
+                await driveWrite({ plants: local });
                 showToast("☁️ Connected — your latest " + localCount + " plants saved to Drive");
               }
             }
@@ -967,7 +967,7 @@ export default function App() {
           } else {
             // No Drive file yet — upload whatever we have locally
             if (local) {
-              await driveWrite({ plants: local, chat: localChat || [] });
+              await driveWrite({ plants: local });
               showToast("☁️ Drive connected — " + localCount + " plants saved");
             } else {
               if (freshToken) showToast("☁️ Drive connected — ready to save");
@@ -1000,7 +1000,6 @@ export default function App() {
     if (!p || typeof p !== "object") return;
     // Always save locally first — this is the safety net
     localSave(p);
-    try { localStorage.setItem("happyroots-chat", JSON.stringify((chat||[]).slice(-40))); } catch {}
     // Check token
     const token = getStoredToken();
     if (!token) {
@@ -1016,7 +1015,7 @@ export default function App() {
     setDriveStatus("syncing");
     saveTimer.current = setTimeout(async () => {
       try {
-        await driveWrite({ plants:p, chat:(chat||[]).slice(-40) });
+        await driveWrite({ plants:p });
         setDriveStatus("saved");
       } catch(e) {
         console.log("Drive write error:", e?.message||e);
@@ -1026,7 +1025,7 @@ export default function App() {
         showToast("⚠️ Drive save failed — data saved locally. Tap Reconnect Drive");
       }
     }, 2000);
-  }, [showToast]);
+  }, []);
 
   useEffect(()=>{
     if(!plants) return;

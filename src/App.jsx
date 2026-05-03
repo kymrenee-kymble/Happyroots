@@ -222,6 +222,231 @@ function buildTasks(plants) {
   return tasks;
 }
 
+mport { useState, useEffect, useCallback, useRef } from "react";
+
+const STARTER_PLANTS = [
+  "Aceh Big Leaf","Anncanajoe","Argentea Princess","Australis","Australis Lisa",
+  "Bella Luis Bois","Bella Outer Variegated","Blashernaezi","Burtonaie Variegated",
+  "Callistophylla","Camphorifolia","Carnosa Amore","Cebu","Chinghungensis Variegated",
+  "Chouke","Clandestina Yellow","Clemensiorum","Clemensorium","Cominsii","Compacta",
+  "Compacta Mauna Loa","Compacta Variegated","Coriacea Silver","Crassipetiolata",
+  "Crassipetiolata Splash","Crassipetiolata x Michelle","Cumingiana","Cumingiana Albo Variegata",
+  "Curtsii","Davidcumingii","Dennisii","Diversifolia Maharnai","DS-70 Variegated",
+  "Elliptica","Elliptica Round Leaf","Endauensis","Erythroneura","Erythrostemma OP",
+  "Erythrostemma Silver","Fitchii","Forbesii","Freckled Splash","Globulosa","Gunung Gading",
+  "Hat Sam Paen","Heidi","Heuschkeliana Pink","Heuschkeliana Variegated","Hoya NOID",
+  "Icensis","Kanyakumariana Variegated","Kast","Kerrii","Kerrii Outer Variegated",
+  "Krimson Princess","Krimson Queen","Krinkle 8 Albomarginata","Krohniana Arctic",
+  "Krohniana Black","Krohniana Green","Krohniana Super Silver",
+  "Lacunosa Asami Inner Var","Lacunosa Variegated","Lacunosa Bruno","Lacunosa Golden Flame",
+  "Lacunosa Illumi","Lacunosa Minara","Lacunosa Mint","Latifolia Dinner Plate",
+  "Latifolia Pot of Gold","Leland Joseph","Linearis","Lobbii Orange","Macgillivrayi",
+  "Macrophylla","Magic","Maliski","Mathilde","Mathilde Splash","Meliflua","Memoria",
+  "Minibelle","Nabawanensis","NAP 16","Nicholsonaie","NS05-055","Obovata",
+  "Obovata Inner Variegated","Obscura Cryptic Chrome","Pachyclada","Para Albo","Parasitica",
+  "Parasitica Black Margin","Parasitica Silver Moon","Parviflora Splash","Pimenteliana Variegated",
+  "Polyneura Inner Var","Polyneura Silver Broget","Pubera","Pubicalyx x carnosa",
+  "Publicalyx Carnosa","Publicalyx Silver Splash","Ranauensis","Rangsan","Retusa","Rigida",
+  "Rigidifolia","Rime Splash","Rosita","RP 013","Sabah","Sabah RP013","Serpens Silver",
+  "Sigillatis","Silver Broget","Silver Dollar 20","Sp Lai Chau Splash","Sungwookii","Sunrise",
+  "Super Silver","Surigaoensis","Tequila Sunrise","UT 073","Verticilata Lampung","Viola",
+  "Walliniana","Walliniana Variegated","Wayetti","Wayetti Tricolor",
+  "Waymaniae Kayla's Cloudy Sky","Wibergiae","Wilbur Graves","Yuna",
+  "Priktai Russia","Sulawesiana Aff","Love Affair","Sigillatis Borneo",
+  "Fischeriana Philippines","Cagayanensis Philippines","Iris Marie",
+  "Callistophylla Josie","Finlaysonii Snow Splash"
+];
+
+const CARE = {
+  water:    { label:"Water + Ferts",  icon:"💧", hue:"196", defaultDays:10,
+              action:"Water thoroughly with Foliage Pro & Hydroguard (diluted). Check soil visually — water only when mix is dry.", scheduled:true },
+  flush:    { label:"Flush (replaces Water)",  icon:"🚿", hue:"258", defaultDays:30,
+              action:"Plain water only today — skip Foliage Pro & Hydroguard. Flush until water runs freely from the bottom to clear salt buildup.", scheduled:true },
+  topdress: { label:"Top Dress",      icon:"🪱", hue:"32",  defaultDays:30,
+              action:"Apply a thin layer of earthworm castings to the soil surface. No watering needed immediately after.", scheduled:true },
+  foliar:   { label:"Foliar Spray",   icon:"🌿", hue:"88",  defaultDays:null,
+              action:"Spray foliage as needed. Avoid spraying during lights-on hours.", scheduled:false },
+  pest:     { label:"Pest Treatment", icon:"🐛", hue:"0",   defaultDays:null,
+              action:"Log product used and next follow-up date.", scheduled:false },
+  note:     { label:"Note / Observation", icon:"📝", hue:"45", defaultDays:null,
+              action:"Record anything worth remembering — new growth, stress signs, changes.", scheduled:false },
+};
+
+const DEFAULT_SCHED = { waterDays:10, flushDays:30, topdressDays:30, foliarDays:14 };
+
+// Adaptive learning: weighted median of actual intervals
+// - wet signals (defer days) push interval out: each deferred day adds 0.5d
+// - early logs (logged before due) pull interval in naturally via shorter interval
+// - recent log pairs weighted more heavily than old ones
+// - activates after 3+ logs; blends 70% learned / 30% default
+function learnedInterval(logs, type, defaultDays) {
+  const typed = (logs||[]).filter(l=>l.type===type).sort((a,b)=>new Date(a.date)-new Date(b.date));
+  if (typed.length < 3) return null;
+  const pairs = [];
+  for (let i=1; i<typed.length; i++) {
+    const d = Math.round((new Date(typed[i].date)-new Date(typed[i-1].date))/86400000);
+    if (d<=0 || d>120) continue;
+    const recency = 0.5 + (i / typed.length);         // 0.5–1.5, recent = higher
+    const wetBoost = (typed[i-1].wetDays||0) * 0.5;  // deferred days push interval out
+    const adjusted = Math.max(1, d + wetBoost);
+    pairs.push({ val: adjusted, weight: recency });
+  }
+  if (pairs.length < 2) return null;
+  pairs.sort((a,b)=>a.val-b.val);
+  const totalW = pairs.reduce((s,x)=>s+x.weight, 0);
+  let cum = 0, median = pairs[0].val;
+  for (const {val,weight} of pairs) {
+    cum += weight;
+    if (cum >= totalW/2) { median = val; break; }
+  }
+  return Math.min(90, Math.max(3, Math.round(median*0.7 + defaultDays*0.3)));
+}
+
+function effectiveInterval(plant, type) {
+  const key = type+"Days";
+  const defaults = { waterDays:10, flushDays:30, topdressDays:30, foliarDays:14 };
+  if (plant.manualOverrides?.[key]) return plant.manualOverrides[key];
+  const learned = learnedInterval(plant.logs||[], type, defaults[key]);
+  const base = learned || plant.schedule?.[key] || defaults[key];
+  // Apply pot/soil modifier to water interval only (flush/topdress are time-based, not dryness-based)
+  if (type === "water" && !learned) {
+    return Math.min(90, Math.max(2, Math.round(base * potModifier(plant))));
+  }
+  return base;
+}
+
+const todayStr  = () => new Date().toDateString();
+const daysSince = d  => d ? Math.floor((Date.now()-new Date(d).getTime())/86400000) : null;
+const fmtDate   = d  => d ? new Date(d).toLocaleDateString("en-US",{month:"short",day:"numeric"}) : "never";
+
+function lastLogOf(plant, type) {
+  const logs = (plant.logs||[]).filter(l=>l.type===type).sort((a,b)=>new Date(b.date)-new Date(a.date));
+  return logs[0]?.date || null;
+}
+
+function mkPlant() {
+  return {
+    schedule:{...DEFAULT_SCHED}, logs:[], deferred:{}, manualOverrides:{},
+    location:"", addedDate:new Date().toISOString(),
+    // pot & soil metadata — used by adaptive learning
+    potSize:"",        // e.g. "2 inch", "4 inch", "6 inch"
+    potMaterial:"",    // "plastic" | "terracotta"
+    soilPreset:"",     // "chunky" | "medium" | "fine" | "leca" | "custom"
+    soilNotes:"",      // free text
+    photos:[],         // array of {date, dataUrl} base64 images
+  };
+}
+
+// Pot/soil modifier for water interval
+// Terracotta dries ~30% faster than plastic; smaller pots dry faster
+function potModifier(plant) {
+  let mod = 1.0;
+  if (plant.potMaterial === "terracotta") mod *= 0.72; // dries faster → shorter interval
+  const size = parseInt(plant.potSize)||0;
+  if (size > 0 && size <= 2)  mod *= 0.80; // tiny — dries very fast
+  else if (size <= 4)         mod *= 0.90;
+  else if (size >= 8)         mod *= 1.15; // big pot holds moisture longer
+  // Chunky mix dries faster; fine mix holds more water
+  if      (plant.soilPreset === "Chunky Aroid")   mod *= 0.85; // drains fast
+  else if (plant.soilPreset === "Medium Aroid")   mod *= 0.95;
+  else if (plant.soilPreset === "Coir + Perlite") mod *= 1.05; // holds some moisture
+  else if (plant.soilPreset === "Tree Fern Fiber") mod *= 0.90;
+  else if (plant.soilPreset === "Cactus Mix")     mod *= 0.80; // very fast draining
+  else if (plant.soilPreset === "Semi-hydro")     mod *= 0.72; // near-LECA behavior
+  else if (plant.soilPreset === "Perlite")        mod *= 0.70; // fastest draining
+  return mod;
+}
+
+function initPlants() {
+  const p = {};
+  STARTER_PLANTS.forEach(n => { p[n] = mkPlant(); });
+  return p;
+}
+
+function buildTasks(plants) {
+  const today = todayStr();
+  const tasks = [];
+  Object.entries(plants).forEach(([name, p]) => {
+    // ── Water vs Flush logic ─────────────────────────────────────────────────
+    // Flush replaces a watering session — never appears alongside it.
+    //
+    // Rule: when watering is due, check if it has been >= 30 days since the
+    // last flush (measured from last flush date to today, not to last water).
+    // If yes → show Flush instead of Water+Ferts.
+    // If no  → show regular Water+Ferts.
+    //
+    // Example: water every 7d, flush threshold 30d
+    //   Day 0:  Flush
+    //   Day 7:  Water+Ferts
+    //   Day 14: Water+Ferts
+    //   Day 21: Water+Ferts
+    //   Day 28: Water+Ferts  (only 28d since flush — not yet)
+    //   Day 35: Flush        (35d since flush — threshold met on this watering)
+
+    const waterThreshold = effectiveInterval(p, "water");
+    const flushThreshold = 30; // always 30 days — not user-adjustable per the design
+
+    const waterLast = lastLogOf(p, "water");
+    const flushLast = lastLogOf(p, "flush");
+    // Use last of either water or flush as the "last watered" date
+    // (logging a flush counts as a watering session)
+    const lastWaterSession = (waterLast && flushLast)
+      ? (new Date(waterLast) > new Date(flushLast) ? waterLast : flushLast)
+      : (waterLast || flushLast);
+
+    const waterAge  = daysSince(lastWaterSession);
+    const flushAge  = daysSince(flushLast); // days since last flush specifically
+
+    const sessionLoggedToday = lastWaterSession && new Date(lastWaterSession).toDateString() === today;
+    const waterDeferred = p.deferred?.["water"] && new Date(p.deferred["water"]) > new Date() && new Date(p.deferred["water"]).toDateString() !== today;
+    const flushDeferred = p.deferred?.["flush"] && new Date(p.deferred["flush"]) > new Date() && new Date(p.deferred["flush"]).toDateString() !== today;
+
+    // Is a watering session due?
+    const waterDue    = waterAge !== null && waterAge >= waterThreshold;
+    const waterUpcoming = !waterDue && waterAge !== null && waterAge >= waterThreshold * 0.75;
+    // Has it been 30+ days since last flush? (null = never flushed → flush is due)
+    const flushDue    = flushAge === null || flushAge >= flushThreshold;
+
+    if (!sessionLoggedToday && !waterDeferred) {
+      if (waterDue && flushDue && !flushDeferred) {
+        // This watering session should be a flush
+        tasks.push({ id:`${name}::flush`, plant:name, type:"flush",
+          age:waterAge, threshold:waterThreshold,
+          last:flushLast, overdue: waterAge > waterThreshold,
+          due:true, upcoming:false, neverLogged:false, replacesWater:true });
+      } else if (waterDue || waterUpcoming) {
+        // Regular Water+Ferts session
+        tasks.push({ id:`${name}::water`, plant:name, type:"water",
+          age:waterAge, threshold:waterThreshold,
+          last:lastWaterSession, overdue: waterAge > waterThreshold,
+          due:waterDue, upcoming:waterUpcoming, neverLogged:false });
+      }
+    }
+
+    // ── All other scheduled types (topdress, foliar) — unchanged logic ───────
+    ["topdress"].forEach(type => {
+      const threshold = effectiveInterval(p, type);
+      const last = lastLogOf(p, type);
+      const age  = daysSince(last);
+      if (last && new Date(last).toDateString()===today) return;
+      const def = p.deferred?.[type];
+      if (def && new Date(def) > new Date() && new Date(def).toDateString()!==today) return;
+      const overdue  = age!==null && age>threshold;
+      const due      = age!==null && age>=threshold;
+      const upcoming = !due && age!==null && age>=threshold*0.75;
+      const neverLogged = age===null;
+      if (overdue||due||upcoming||neverLogged)
+        tasks.push({ id:`${name}::${type}`, plant:name, type, age, threshold, last, overdue, due, upcoming, neverLogged });
+    });
+  });
+  tasks.sort((a,b)=>{
+    const r=t=>t.overdue?0:t.due?1:t.neverLogged?2:3;
+    return r(a)!==r(b) ? r(a)-r(b) : (b.age||0)-(a.age||0);
+  });
+  return tasks;
+}
+
+
 
 // ── Palette: warm white, sage, terracotta, dusty rose ────────────────────────
 const BG      = "#faf8f5";   // warm white
@@ -901,24 +1126,31 @@ export default function App() {
     return null;
   }
 
+  function localLoadChat() {
+    try {
+      const keys = ["happyroots-chat","hoya-chat-stable","hoya-v5-chat"];
+      for (const k of keys) {
+        const r = localStorage.getItem(k);
+        if (r) return JSON.parse(r);
+      }
+    } catch {}
+    return null;
+  }
 
-
-  // ── On mount: handle OAuth return, load data, try Drive ──────────────────
+  // ── On mount: Drive is the single source of truth ───────────────────────────
+  // Local cache is shown instantly for speed, then Drive always loads on top.
+  // No merging — Drive wins every time on load.
+  // Safety: if Drive has 0 plants and local has plants, push local up instead.
   useEffect(()=>{
     (async()=>{
-      // Did we just return from Google OAuth?
       const freshToken = handleOAuthReturn();
-      if (freshToken) {
-        driveAuthRef.current = true;
-        setDriveAuthed(true);
-      }
+      if (freshToken) { driveAuthRef.current = true; setDriveAuthed(true); }
 
-      // Load local data immediately (snappy UX)
-      const local     = localLoad();
+      // Show local cache immediately
+      const local = localLoad();
       const localCount = local ? Object.keys(local).length : 0;
       setPlants(local || initPlants());
 
-      // Try Drive if we have any token
       const token = getStoredToken();
       if (token) {
         driveAuthRef.current = true;
@@ -928,45 +1160,23 @@ export default function App() {
           const data = await driveRead();
           if (data?.plants) {
             const driveCount = Object.keys(data.plants).length;
-            const driveTime  = data.savedAt ? new Date(data.savedAt).getTime() : 0;
-            // Get the timestamp of local data
-            let localTime = 0;
-            try {
-              const keys = ["happyroots-plants","hr-session","hoya-plants-stable"];
-              for (const k of keys) {
-                const raw = localStorage.getItem(k);
-                if (raw) {
-                  const parsed = JSON.parse(raw);
-                  const t = parsed?.savedAt ? new Date(parsed.savedAt).getTime() : 0;
-                  if (t > localTime) localTime = t;
-                }
-              }
-            } catch {}
-
-            // ── Merge logic ────────────────────────────────────────────────
-            // Most recently saved version wins.
-            // Exception: if this is a brand-new device (no local savedAt),
-            // always load from Drive — it's the source of truth.
-            const isNewDevice = localTime === 0;
-            const driveWins   = isNewDevice || driveTime > localTime;
-
-            if (driveWins) {
+            if (driveCount > 0) {
+              // Drive has plants — it's the source of truth, always load it
               setPlants(data.plants);
               localSave(data.plants);
-              const n = driveCount;
-              if (freshToken) showToast("☁️ Connected! " + n + " plants loaded");
-              else if (driveTime > localTime) showToast("☁️ Drive has newer data — " + n + " plants loaded");
+              setDriveStatus("saved");
+              if (freshToken) showToast("☁️ Connected! " + driveCount + " plants loaded");
             } else {
-              // Local is newer — push it up to Drive
-              if (local) {
+              // Drive is empty — push local up
+              if (local && localCount > 0) {
                 await driveWrite({ plants: local });
-                showToast("☁️ Connected — your latest " + localCount + " plants saved to Drive");
+                showToast("☁️ Drive connected — " + localCount + " plants saved");
               }
+              setDriveStatus("saved");
             }
-            setDriveStatus("saved");
           } else {
-            // No Drive file yet — upload whatever we have locally
-            if (local) {
+            // No Drive file yet — create it from local
+            if (local && localCount > 0) {
               await driveWrite({ plants: local });
               showToast("☁️ Drive connected — " + localCount + " plants saved");
             } else {
@@ -1000,6 +1210,7 @@ export default function App() {
     if (!p || typeof p !== "object") return;
     // Always save locally first — this is the safety net
     localSave(p);
+    try { localStorage.setItem("happyroots-chat", JSON.stringify((chat||[]).slice(-40))); } catch {}
     // Check token
     const token = getStoredToken();
     if (!token) {
@@ -1015,7 +1226,7 @@ export default function App() {
     setDriveStatus("syncing");
     saveTimer.current = setTimeout(async () => {
       try {
-        await driveWrite({ plants:p });
+        await driveWrite({ plants:p, chat:(chat||[]).slice(-40) });
         setDriveStatus("saved");
       } catch(e) {
         console.log("Drive write error:", e?.message||e);
@@ -1025,7 +1236,7 @@ export default function App() {
         showToast("⚠️ Drive save failed — data saved locally. Tap Reconnect Drive");
       }
     }, 2000);
-  }, []);
+  }, [showToast]);
 
   useEffect(()=>{
     if(!plants) return;
@@ -1035,9 +1246,12 @@ export default function App() {
     all.forEach(t=>{
       const p=plants[t.plant];
       const last=lastLogOf(p,t.type);
-      if(last&&new Date(last).toDateString()===today){done.push(t);return;}
-      const def=p.deferred?.[t.type];
-      if(def&&(new Date(def).toDateString()===today||new Date(def)>new Date())){deferred.push(t);return;}
+      const lastDate = last ? new Date(last) : null;
+      const now = new Date();
+      // Logged today → done
+      if(last && lastDate.toDateString()===today){done.push(t);return;}
+      // Last log date is in the future → deferred (deferTask pushed it forward)
+      if(last && lastDate > now){deferred.push(t);return;}
       active.push(t);
     });
     setTasks(active); setDoneTasks(done); setDeferred(deferred);
@@ -1096,14 +1310,24 @@ export default function App() {
   }
 
   function deferTask(task, days=1) {
-    const until = new Date(); until.setDate(until.getDate()+days);
     setPlants(prev => {
       const p = prev[task.plant];
       const logs = [...(p.logs||[])];
       const lastIdx = logs.map(l=>l.type).lastIndexOf(task.type);
-      if (lastIdx !== -1) logs[lastIdx] = { ...logs[lastIdx], wetDays: (logs[lastIdx].wetDays||0)+days };
-      const n = { ...prev, [task.plant]: { ...p, logs, deferred: { ...(p.deferred||{}), [task.type]: until.toISOString() } } };
-      return n;
+      if (lastIdx !== -1) {
+        // Push the last log date forward by N days so daysSince() returns a smaller number
+        // This means the plant won't be due again until interval days after the deferred date
+        const lastLog = logs[lastIdx];
+        const newDate = new Date(lastLog.date);
+        newDate.setDate(newDate.getDate() + days);
+        logs[lastIdx] = { ...lastLog, date: newDate.toISOString(), wetDays: (lastLog.wetDays||0)+days };
+      } else {
+        // No prior log — add a synthetic entry dated N days from now
+        const futureDate = new Date();
+        futureDate.setDate(futureDate.getDate() + days);
+        logs.push({ type: task.type, date: futureDate.toISOString(), note: "still wet", wetDays: days, synthetic: true });
+      }
+      return { ...prev, [task.plant]: { ...p, logs } };
     });
     showToast(`${task.plant} — checking back in ${days} day${days>1?"s":""} · schedule updated`);
   }
@@ -1189,6 +1413,7 @@ export default function App() {
         const imported = data.plants || data; // support both wrapped and bare formats
         if (typeof imported !== "object" || Array.isArray(imported)) throw new Error("Invalid format");
         setPlants(imported);
+        if (data.chat) setChatMsgs(data.chat);
         localStorage.setItem("hoya-plants-stable", JSON.stringify({ plants: imported, savedAt: new Date().toISOString() }));
         persist(imported, []);
         showToast(`✅ Imported ${Object.keys(imported).length} plants`);
@@ -1197,6 +1422,7 @@ export default function App() {
     reader.readAsText(file);
     setShowDataMenu(false);
   }
+
 
   if(!plants) return (
     <div style={{minHeight:"100vh",background:BG,display:"flex",alignItems:"center",justifyContent:"center",color:SAGE_D,fontFamily:SERIF,fontSize:15}}>
@@ -1389,7 +1615,7 @@ export default function App() {
                       <div style={{fontSize:13,color:INK,fontWeight:600,marginBottom:5,fontFamily:SERIF}}>{name}</div>
                       <div style={{display:"flex",flexDirection:"column",gap:4}}>
                         {grp.map(t=>{
-                          const def=plants[t.plant]?.deferred?.[t.type];
+                          const def=lastLogOf(plants[t.plant],t.type);
                           return (
                             <div key={t.type} style={{display:"flex",alignItems:"center",gap:8}}>
                               <span style={{fontSize:13}}>{CARE[t.type]?.icon}</span>

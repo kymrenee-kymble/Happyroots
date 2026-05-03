@@ -436,32 +436,36 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
         </div>
 
         {/* Photo section */}
-        {(plant.photos?.length > 0 || true) && (
-          <div style={{marginBottom:16,display:"flex",alignItems:"center",gap:10}}>
-            {plant.photos?.slice(-1)[0] && (
-              <img src={plant.photos.slice(-1)[0].dataUrl}
-                alt="Latest photo"
-                style={{width:72,height:72,objectFit:"cover",borderRadius:10,border:`1px solid ${BORDER}`,flexShrink:0}}
-              />
-            )}
-            <div>
-              {plant.photos?.length > 0 && (
-                <div style={{fontSize:10,color:MUTED,marginBottom:4}}>{plant.photos.length} photo{plant.photos.length!==1?"s":" "} · last {fmtDate(plant.photos.slice(-1)[0]?.date)}</div>
-              )}
-              <label style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:20,padding:"5px 12px",fontSize:11,color:MUTED,fontFamily:FONT,cursor:"pointer",display:"inline-block"}}>
-                📸 {plant.photos?.length?"Add photo":"Add first photo"}
-                <input type="file" accept="image/*" style={{display:"none"}} onChange={e=>{
-                  const file=e.target.files?.[0];
-                  if(!file) return;
-                  const reader=new FileReader();
-                  reader.onload=ev=>onAddPhoto(name,ev.target.result);
-                  reader.readAsDataURL(file);
-                  e.target.value="";
-                }}/>
-              </label>
-            </div>
+        <div style={{marginBottom:18}}>
+          <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:1.8,marginBottom:9,fontWeight:600,fontFamily:SERIF,fontStyle:"italic",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <span>Photos {plant.photos?.length > 0 ? `(${plant.photos.length}/5)` : ""}</span>
+            <label style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:20,padding:"3px 12px",fontSize:10,color:SAGE_D,fontFamily:FONT,cursor:"pointer"}}>
+              📸 Add photo
+              <input type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={e=>{
+                const file=e.target.files?.[0];
+                if(!file) return;
+                const reader=new FileReader();
+                reader.onload=ev=>onAddPhoto(name,ev.target.result);
+                reader.readAsDataURL(file);
+                e.target.value="";
+              }}/>
+            </label>
           </div>
-        )}
+          {plant.photos?.length > 0 ? (
+            <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:4}}>
+              {[...plant.photos].reverse().map((ph,i)=>(
+                <div key={i} style={{flexShrink:0,position:"relative"}}>
+                  <img src={ph.dataUrl} alt={`Photo ${i+1}`}
+                    style={{width:80,height:80,objectFit:"cover",borderRadius:10,border:`1px solid ${BORDER}`,display:"block"}}
+                  />
+                  <div style={{fontSize:9,color:MUTED,textAlign:"center",marginTop:3}}>{fmtDate(ph.date)}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{fontSize:11,color:MUTED,fontStyle:"italic"}}>No photos yet — tap Add photo to start tracking progress</div>
+          )}
+        </div>
 
         {/* Log buttons */}
         <div style={{marginBottom:20}}>
@@ -660,15 +664,19 @@ function LogModal({plant,type,onLog,onClose}){
   const [note,setNote]=useState("");
   const [pestProduct,setPestProduct]=useState("");
   const [pestNextDate,setPestNextDate]=useState("");
+  // Date picker — defaults to today, lets you backdate entries
+  const todayISO = new Date().toISOString().split("T")[0];
+  const [logDate,setLogDate]=useState(todayISO);
   const isPest = type==="pest";
   const isNote = type==="note";
 
   const handleLog = () => {
+    // Use the selected date instead of always now
+    const selectedDate = new Date(logDate + "T12:00:00").toISOString();
     if (isPest) {
-      const payload = { product:pestProduct, nextDate:pestNextDate, note };
-      onLog(plant, type, payload);
+      onLog(plant, type, { product:pestProduct, nextDate:pestNextDate, note }, selectedDate);
     } else {
-      onLog(plant, type, note);
+      onLog(plant, type, note, selectedDate);
     }
   };
 
@@ -701,13 +709,22 @@ function LogModal({plant,type,onLog,onClose}){
             </div>
           </div>
         )}
+        {/* Date picker */}
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:10,color:MUTED,marginBottom:4,textTransform:"uppercase",letterSpacing:1.5,fontStyle:"italic"}}>Date</div>
+          <input type="date" value={logDate} onChange={e=>setLogDate(e.target.value)}
+            style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:8,padding:"8px 11px",color:INK,fontFamily:FONT,fontSize:12,colorScheme:"light"}}
+          />
+        </div>
         <textarea value={note} onChange={e=>setNote(e.target.value)}
           placeholder={isPest?"Optional notes — e.g. signs observed, dilution used":isNote?"What did you observe?":"Optional note — e.g. soil was nearly dry, slight wilt"}
           rows={isPest?2:3}
           style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:9,padding:"10px 13px",color:INK,fontFamily:FONT,fontSize:12,resize:"none",marginBottom:13}}
         />
         <div style={{display:"flex",gap:8}}>
-          <button onClick={handleLog} style={{flex:1,background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:10,padding:"11px",fontSize:13,color:"#fff",fontFamily:FONT,fontWeight:600}}>Log today</button>
+          <button onClick={handleLog} style={{flex:1,background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:10,padding:"11px",fontSize:13,color:"#fff",fontFamily:FONT,fontWeight:600}}>
+            {logDate===new Date().toISOString().split("T")[0] ? "Log today" : "Log for " + new Date(logDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric"})}
+          </button>
           <button onClick={onClose} style={{flex:1,background:SURF,border:`1px solid ${BORDER}`,borderRadius:10,padding:"11px",fontSize:13,color:MUTED,fontFamily:FONT}}>Cancel</button>
         </div>
       </div>
@@ -1025,7 +1042,7 @@ export default function App() {
   // 2. Call setPlants with it
   // 3. Call persist with it directly — no closures, no setTimeout, no stale state
 
-  function logCare(plantName, type, extra="") {
+  function logCare(plantName, type, extra="", customDate=null) {
     setPlants(prev => {
       let n;
       if (type === "__override__") {
@@ -1040,7 +1057,7 @@ export default function App() {
         const p = prev[plantName];
         const newLog = {
           type,
-          date: new Date().toISOString(),
+          date: customDate || new Date().toISOString(),
           ...(typeof extra==="object" && extra!==null
             ? { note: extra.note||"", product: extra.product||"", nextDate: extra.nextDate||"" }
             : { note: typeof extra==="string" ? extra : "" }
@@ -1130,15 +1147,27 @@ export default function App() {
     showToast("Log entry removed");
   }
 
-  function addPhoto(plantName, dataUrl) {
-    setPlants(prev => {
-      const p = prev[plantName];
-      const photos = [...(p.photos||[]), { date: new Date().toISOString(), dataUrl }];
-      // Keep only last 10 photos per plant to avoid storage bloat
-      if (photos.length > 10) photos.splice(0, photos.length - 10);
-      return { ...prev, [plantName]: { ...p, photos } };
-    });
-    showToast("📸 Photo saved");
+  function addPhoto(plantName, dataUrl, targetSize=800) {
+    // Compress image before storing to keep storage manageable
+    const canvas = document.createElement("canvas");
+    const img = new Image();
+    img.onload = () => {
+      const ratio = Math.min(targetSize/img.width, targetSize/img.height, 1);
+      canvas.width  = Math.round(img.width  * ratio);
+      canvas.height = Math.round(img.height * ratio);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const compressed = canvas.toDataURL("image/jpeg", 0.75);
+      setPlants(prev => {
+        const p = prev[plantName];
+        const photos = [...(p.photos||[]), { date: new Date().toISOString(), dataUrl: compressed }];
+        // Keep only last 5 photos per plant (~5 × ~150KB = ~750KB per plant max)
+        if (photos.length > 5) photos.splice(0, photos.length - 5);
+        return { ...prev, [plantName]: { ...p, photos } };
+      });
+      showToast("📸 Photo saved");
+    };
+    img.src = dataUrl;
   }
 
   function exportData() {

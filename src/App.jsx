@@ -109,6 +109,7 @@ function mkPlant() {
     potMaterial:"",    // "plastic" | "terracotta"
     soilPreset:"",     // "chunky" | "medium" | "fine" | "leca" | "custom"
     soilNotes:"",      // free text
+    photos:[],         // array of {date, dataUrl} base64 images
   };
 }
 
@@ -143,45 +144,63 @@ function buildTasks(plants) {
   const tasks = [];
   Object.entries(plants).forEach(([name, p]) => {
     // ── Water vs Flush logic ─────────────────────────────────────────────────
-    // Flush replaces the next Water+Ferts session when:
-    //   - A watering is due (or overdue), AND
-    //   - It's been 30+ days since the last flush
-    // It does NOT appear as a separate task on top of watering.
+    // Flush replaces a watering session — never appears alongside it.
+    //
+    // Rule: when watering is due, check if it has been >= 30 days since the
+    // last flush (measured from last flush date to today, not to last water).
+    // If yes → show Flush instead of Water+Ferts.
+    // If no  → show regular Water+Ferts.
+    //
+    // Example: water every 7d, flush threshold 30d
+    //   Day 0:  Flush
+    //   Day 7:  Water+Ferts
+    //   Day 14: Water+Ferts
+    //   Day 21: Water+Ferts
+    //   Day 28: Water+Ferts  (only 28d since flush — not yet)
+    //   Day 35: Flush        (35d since flush — threshold met on this watering)
 
     const waterThreshold = effectiveInterval(p, "water");
+    const flushThreshold = 30; // always 30 days — not user-adjustable per the design
+
     const waterLast = lastLogOf(p, "water");
-    const waterAge  = daysSince(waterLast);
-    const flushThreshold = effectiveInterval(p, "flush");
     const flushLast = lastLogOf(p, "flush");
-    const flushAge  = daysSince(flushLast);
+    // Use last of either water or flush as the "last watered" date
+    // (logging a flush counts as a watering session)
+    const lastWaterSession = (waterLast && flushLast)
+      ? (new Date(waterLast) > new Date(flushLast) ? waterLast : flushLast)
+      : (waterLast || flushLast);
 
-    const waterDue    = waterAge !== null && waterAge >= waterThreshold;
-    const waterLogged = waterLast && new Date(waterLast).toDateString() === today;
-    const flushDue    = flushAge === null || flushAge >= flushThreshold; // never flushed, or overdue
-    const flushDeferred = p.deferred?.["flush"] && new Date(p.deferred["flush"]) > new Date() && new Date(p.deferred["flush"]).toDateString() !== today;
+    const waterAge  = daysSince(lastWaterSession);
+    const flushAge  = daysSince(flushLast); // days since last flush specifically
+
+    const sessionLoggedToday = lastWaterSession && new Date(lastWaterSession).toDateString() === today;
     const waterDeferred = p.deferred?.["water"] && new Date(p.deferred["water"]) > new Date() && new Date(p.deferred["water"]).toDateString() !== today;
+    const flushDeferred = p.deferred?.["flush"] && new Date(p.deferred["flush"]) > new Date() && new Date(p.deferred["flush"]).toDateString() !== today;
 
-    if (!waterLogged && !waterDeferred) {
+    // Is a watering session due?
+    const waterDue    = waterAge !== null && waterAge >= waterThreshold;
+    const waterUpcoming = !waterDue && waterAge !== null && waterAge >= waterThreshold * 0.75;
+    // Has it been 30+ days since last flush? (null = never flushed → flush is due)
+    const flushDue    = flushAge === null || flushAge >= flushThreshold;
+
+    if (!sessionLoggedToday && !waterDeferred) {
       if (waterDue && flushDue && !flushDeferred) {
-        // Flush replaces water this session
-        const flushLogged = flushLast && new Date(flushLast).toDateString() === today;
-        if (!flushLogged) {
-          const overdue = waterAge > waterThreshold;
-          tasks.push({ id:`${name}::flush`, plant:name, type:"flush", age:waterAge, threshold:waterThreshold,
-            last:flushLast, overdue, due:true, upcoming:false, neverLogged:false, replacesWater:true });
-        }
-      } else if (waterDue || (waterAge !== null && waterAge >= waterThreshold * 0.75)) {
-        // Regular water+ferts
-        const overdue  = waterAge !== null && waterAge > waterThreshold;
-        const due      = waterAge !== null && waterAge >= waterThreshold;
-        const upcoming = !due && waterAge !== null && waterAge >= waterThreshold * 0.75;
-        tasks.push({ id:`${name}::water`, plant:name, type:"water", age:waterAge, threshold:waterThreshold,
-          last:waterLast, overdue, due, upcoming, neverLogged:false });
+        // This watering session should be a flush
+        tasks.push({ id:`${name}::flush`, plant:name, type:"flush",
+          age:waterAge, threshold:waterThreshold,
+          last:flushLast, overdue: waterAge > waterThreshold,
+          due:true, upcoming:false, neverLogged:false, replacesWater:true });
+      } else if (waterDue || waterUpcoming) {
+        // Regular Water+Ferts session
+        tasks.push({ id:`${name}::water`, plant:name, type:"water",
+          age:waterAge, threshold:waterThreshold,
+          last:lastWaterSession, overdue: waterAge > waterThreshold,
+          due:waterDue, upcoming:waterUpcoming, neverLogged:false });
       }
     }
 
     // ── All other scheduled types (topdress, foliar) — unchanged logic ───────
-    ["topdress","foliar"].forEach(type => {
+    ["topdress"].forEach(type => {
       const threshold = effectiveInterval(p, type);
       const last = lastLogOf(p, type);
       const age  = daysSince(last);
@@ -242,6 +261,25 @@ function Toast({msg,visible}){
       fontSize:12,color:INK,fontFamily:FONT,opacity:visible?1:0,transition:"all .28s ease",
       zIndex:600,boxShadow:"0 4px 24px rgba(61,53,48,0.12)",pointerEvents:"none",whiteSpace:"nowrap"}}>
       {msg}
+    </div>
+  );
+}
+
+// Collapsible room section for Today view
+function CollapsibleRoom({loc, groups, renderCards}) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div style={{borderRadius:12,border:`1px solid rgba(176,107,74,0.2)`,overflow:"hidden"}}>
+      <button onClick={()=>setOpen(v=>!v)} style={{
+        width:"100%",display:"flex",alignItems:"center",justifyContent:"space-between",
+        padding:"10px 14px",background:`rgba(176,107,74,0.06)`,border:"none",
+        fontFamily:"'Playfair Display',serif",fontSize:12,color:"#b06b4a",
+        fontStyle:"italic",cursor:"pointer",textAlign:"left"
+      }}>
+        <span>📍 {loc} · {groups.length} plant{groups.length!==1?"s":""}</span>
+        <span style={{fontSize:14,transition:"transform .2s",transform:open?"rotate(0)":"rotate(-90deg)"}}>▾</span>
+      </button>
+      {open&&<div style={{display:"flex",flexDirection:"column",gap:6,padding:"8px 8px"}}>{renderCards(groups)}</div>}
     </div>
   );
 }
@@ -331,7 +369,7 @@ function PlantTaskCard({plantName, tasks, onDone, onDefer, onOpenPlant}){
   );
 }
 
-function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename}){
+function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,onDeleteLog,onAddPhoto}){
   const [schedEdit,setSchedEdit]=useState({});
   const [savedMsg,setSavedMsg]=useState("");
   const [confirmDel,setConfirmDel]=useState(false);
@@ -413,6 +451,34 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename}){
           </div>
           <button onClick={onClose} style={{background:"none",border:"none",color:MUTED,fontSize:22,cursor:"pointer",lineHeight:1,flexShrink:0,padding:"0 4px"}}>×</button>
         </div>
+
+        {/* Photo section */}
+        {(plant.photos?.length > 0 || true) && (
+          <div style={{marginBottom:16,display:"flex",alignItems:"center",gap:10}}>
+            {plant.photos?.slice(-1)[0] && (
+              <img src={plant.photos.slice(-1)[0].dataUrl}
+                alt="Latest photo"
+                style={{width:72,height:72,objectFit:"cover",borderRadius:10,border:`1px solid ${BORDER}`,flexShrink:0}}
+              />
+            )}
+            <div>
+              {plant.photos?.length > 0 && (
+                <div style={{fontSize:10,color:MUTED,marginBottom:4}}>{plant.photos.length} photo{plant.photos.length!==1?"s":" "} · last {fmtDate(plant.photos.slice(-1)[0]?.date)}</div>
+              )}
+              <label style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:20,padding:"5px 12px",fontSize:11,color:MUTED,fontFamily:FONT,cursor:"pointer",display:"inline-block"}}>
+                📸 {plant.photos?.length?"Add photo":"Add first photo"}
+                <input type="file" accept="image/*" style={{display:"none"}} onChange={e=>{
+                  const file=e.target.files?.[0];
+                  if(!file) return;
+                  const reader=new FileReader();
+                  reader.onload=ev=>onAddPhoto(name,ev.target.result);
+                  reader.readAsDataURL(file);
+                  e.target.value="";
+                }}/>
+              </label>
+            </div>
+          </div>
+        )}
 
         {/* Log buttons */}
         <div style={{marginBottom:20}}>
@@ -552,6 +618,7 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename}){
                       <span>{CARE[l.type]?.icon}</span>
                       <span style={{color:INK,fontWeight:600}}>{CARE[l.type]?.label}</span>
                       <span style={{color:MUTED,fontSize:10}}>{fmtDate(l.date)}</span>
+                      <button onClick={()=>onDeleteLog(name, (plant.logs||[]).length-1-i)} style={{marginLeft:"auto",background:"transparent",border:"none",color:ROSE,fontSize:11,cursor:"pointer",padding:"0 2px",opacity:0.6,fontFamily:FONT}} title="Remove this log entry">✕</button>
                     </div>
                     {product  && <div style={{fontSize:10.5,color:INK,marginTop:3}}>🧪 {product}</div>}
                     {nextDate && <div style={{fontSize:10.5,color:SAGE_D,marginTop:2}}>📅 Next treatment: {fmtDate(nextDate)}</div>}
@@ -808,6 +875,7 @@ export default function App() {
   const [addModal,setAddModal]       = useState(false);
   const [search,setSearch]           = useState("");
   const [sortBy,setSortBy]           = useState("name");
+  const [filterLoc,setFilterLoc]     = useState("");
   const [chatMsgs,setChatMsgs]       = useState([]);
   const [chatInput,setChatInput]     = useState("");
   const [chatLoading,setChatLoading] = useState(false);
@@ -1038,18 +1106,21 @@ export default function App() {
         // silent
       } else {
         const p = prev[plantName];
+        const newLog = {
+          type,
+          date: new Date().toISOString(),
+          ...(typeof extra==="object" && extra!==null
+            ? { note: extra.note||"", product: extra.product||"", nextDate: extra.nextDate||"" }
+            : { note: typeof extra==="string" ? extra : "" }
+          )
+        };
+        // Logging a flush clears both water and flush deferrals — it IS a watering session
+        const clearTypes = type === "flush" ? [type, "water"] : [type];
+        const newDeferred = { ...(p.deferred||{}) };
+        clearTypes.forEach(t => { newDeferred[t] = null; });
         n = { ...prev, [plantName]: { ...p,
-          logs: [...(p.logs||[]), {
-            type,
-            date: new Date().toISOString(),
-            // For pest: store all fields at top level for easy display
-            // For others: store note string directly
-            ...(typeof extra==="object" && extra!==null
-              ? { note: extra.note||"", product: extra.product||"", nextDate: extra.nextDate||"" }
-              : { note: typeof extra==="string" ? extra : "" }
-            )
-          }],
-          deferred: { ...(p.deferred||{}), [type]: null },
+          logs: [...(p.logs||[]), newLog],
+          deferred: newDeferred,
         }};
         showToast(`${CARE[type].icon} ${CARE[type].label} logged`);
         setLogModal(null);
@@ -1110,6 +1181,27 @@ export default function App() {
     showToast(`📍 Location saved for ${name}`);
   }
 
+  function deleteLog(plantName, logIndex) {
+    setPlants(prev => {
+      const p = prev[plantName];
+      const logs = [...(p.logs||[])];
+      logs.splice(logIndex, 1);
+      return { ...prev, [plantName]: { ...p, logs } };
+    });
+    showToast("Log entry removed");
+  }
+
+  function addPhoto(plantName, dataUrl) {
+    setPlants(prev => {
+      const p = prev[plantName];
+      const photos = [...(p.photos||[]), { date: new Date().toISOString(), dataUrl }];
+      // Keep only last 10 photos per plant to avoid storage bloat
+      if (photos.length > 10) photos.splice(0, photos.length - 10);
+      return { ...prev, [plantName]: { ...p, photos } };
+    });
+    showToast("📸 Photo saved");
+  }
+
   function exportData() {
     const payload = { plants, chat: chatMsgs.slice(-40), exportedAt: new Date().toISOString(), version: "stable" };
     const blob = new Blob([JSON.stringify(payload, null, 2)], {type:"application/json"});
@@ -1159,8 +1251,8 @@ export default function App() {
       }).join("\n");
     const sys=SYSTEM_PROMPT+(ctx?`\n\nCurrently due/overdue:\n${ctx}`:"");
     try {
-      const res=await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
+      const res=await fetch("/.netlify/functions/chat",{
+        method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:sys,
           messages:next.map(m=>({role:m.role,content:m.content}))})
       });
@@ -1219,12 +1311,9 @@ export default function App() {
           </button>}
         </div>
         {groupByLoc&&isMain ? (
-          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
             {groupByLocation(groups).map(({loc,groups:lg})=>(
-              <div key={loc}>
-                <div style={{fontSize:10.5,color:TERRA,fontFamily:SERIF,fontStyle:"italic",marginBottom:7,paddingLeft:2}}>📍 {loc}</div>
-                <div style={{display:"flex",flexDirection:"column",gap:7}}>{renderCards(lg)}</div>
-              </div>
+              <CollapsibleRoom key={loc} loc={loc} groups={lg} renderCards={renderCards}/>
             ))}
           </div>
         ) : (
@@ -1393,10 +1482,16 @@ export default function App() {
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search your collection…"
               style={{flex:1,background:CARD,border:`1px solid ${BORDER}`,borderRadius:20,padding:"9px 16px",color:INK,fontFamily:FONT,fontSize:12.5}}
             />
-            <button onClick={()=>setSortBy(s=>s==="name"?"location":"name")} style={{background:sortBy==="location"?SAGE:SURF,border:`1px solid ${sortBy==="location"?SAGE_D:BORDER}`,borderRadius:20,padding:"9px 12px",fontSize:11,color:sortBy==="location"?"#fff":MUTED,fontFamily:FONT,flexShrink:0}} title="Sort by location">📍</button>
             <button onClick={()=>setAddModal(true)} style={{background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:20,padding:"9px 16px",fontSize:12,color:"#fff",fontFamily:FONT,fontWeight:600,flexShrink:0}}>
               + Add plant
             </button>
+          </div>
+          {/* Location filter */}
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
+            <button onClick={()=>setFilterLoc("")} style={{fontSize:11,padding:"4px 12px",borderRadius:20,fontFamily:FONT,cursor:"pointer",background:filterLoc===""?SAGE:SURF,color:filterLoc===""?"#fff":MUTED,border:`1px solid ${filterLoc===""?SAGE_D:BORDER}`}}>All</button>
+            {[...new Set(Object.values(plants).map(p=>p.location||"").filter(Boolean))].sort().map(loc=>(
+              <button key={loc} onClick={()=>setFilterLoc(l=>l===loc?"":loc)} style={{fontSize:11,padding:"4px 12px",borderRadius:20,fontFamily:FONT,cursor:"pointer",background:filterLoc===loc?TERRA:SURF,color:filterLoc===loc?"#fff":MUTED,border:`1px solid ${filterLoc===loc?TERRA:BORDER}`}}>📍 {loc}</button>
+            ))}
           </div>
           <div style={{display:"flex",gap:10,marginBottom:12,fontSize:10.5,color:MUTED,alignItems:"center"}}>
             <span>status: </span>
@@ -1408,12 +1503,15 @@ export default function App() {
             ))}
           </div>
           <div style={{display:"flex",flexDirection:"column",gap:4}}>
-            {Object.keys(plants).filter(n=>!search||n.toLowerCase().includes(search.toLowerCase())).sort((a,b)=>{
-              if(sortBy==="location"){
-                const la=plants[a]?.location||"zzz", lb=plants[b]?.location||"zzz";
-                return la===lb?a.localeCompare(b):la.localeCompare(lb);
-              }
-              return a.localeCompare(b);
+            {Object.keys(plants)
+            .filter(n=>{
+              if(search && !n.toLowerCase().includes(search.toLowerCase())) return false;
+              if(filterLoc && (plants[n]?.location||"") !== filterLoc) return false;
+              return true;
+            })
+            .sort((a,b)=>{
+              const la=plants[a]?.location||"zzz", lb=plants[b]?.location||"zzz";
+              return la===lb?a.localeCompare(b):la.localeCompare(lb);
             }).map(name=>{
               const p=plants[name];
               const dot=type=>{
@@ -1425,6 +1523,11 @@ export default function App() {
               const lc=(p.logs||[]).length;
               return (
                 <div key={name} onClick={()=>setDetailPlant(name)} style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:12,padding:"11px 15px",cursor:"pointer",display:"flex",alignItems:"center",gap:12,transition:"all .15s",boxShadow:"0 1px 4px rgba(61,53,48,0.05)"}}>
+                  {p.photos?.slice(-1)[0] && (
+                    <img src={p.photos.slice(-1)[0].dataUrl} alt={name}
+                      style={{width:40,height:40,objectFit:"cover",borderRadius:8,border:`1px solid ${BORDER}`,flexShrink:0}}
+                    />
+                  )}
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:13,color:INK,fontWeight:500,fontFamily:SERIF,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{name}</div>
                     {p.location&&<div style={{fontSize:10,color:SAGE_D,marginTop:2}}>📍 {p.location}</div>}
@@ -1501,7 +1604,12 @@ export default function App() {
               setLogModal({plant:name,type}); // modal opens on top, sheet stays open
             }
           }}
-          onClose={()=>setDetailPlant(null)} onDelete={deletePlant} onSetLocation={setPlantLocation} onRename={renamePlant}
+          onClose={()=>setDetailPlant(null)}
+          onDelete={deletePlant}
+          onSetLocation={setPlantLocation}
+          onRename={renamePlant}
+          onDeleteLog={deleteLog}
+          onAddPhoto={addPhoto}
         />
       )}
       {logModal&&<LogModal plant={logModal.plant} type={logModal.type} onLog={logCare} onClose={()=>setLogModal(null)}/>}

@@ -222,8 +222,6 @@ function buildTasks(plants) {
   return tasks;
 }
 
-const SYSTEM_PROMPT = `You are Kym's personal Hoya care assistant. Kym is an experienced Hoya collector near Seattle with 100+ plants under grow lights.
-
 Care routine:
 - Every watering: Foliage Pro + Hydroguard (diluted). Water only when soil visually dry (clear nursery pots, chunky mix).
 - Monthly flush: replaces the next watering session when 30+ days have passed since last flush. Plain water only that day — skip Foliage Pro & Hydroguard. Flush until water runs from drainage.
@@ -876,15 +874,11 @@ export default function App() {
   const [search,setSearch]           = useState("");
   const [sortBy,setSortBy]           = useState("name");
   const [filterLoc,setFilterLoc]     = useState("");
-  const [chatMsgs,setChatMsgs]       = useState([]);
-  const [chatInput,setChatInput]     = useState("");
-  const [chatLoading,setChatLoading] = useState(false);
   const [toast,setToast]             = useState({msg:"",visible:false});
   const [driveStatus,setDriveStatus] = useState("idle");
   const [driveAuthed,setDriveAuthed] = useState(false);
   const [showDataMenu,setShowDataMenu] = useState(false);
   const [groupByLoc,setGroupByLoc]     = useState(false);
-  const chatEnd    = useRef(null);
   const saveTimer  = useRef(null);
   const importRef  = useRef(null);
   const driveAuthRef = useRef(false);
@@ -921,16 +915,7 @@ export default function App() {
     return null;
   }
 
-  function localLoadChat() {
-    try {
-      const keys = ["happyroots-chat","hoya-chat-stable","hoya-v5-chat"];
-      for (const k of keys) {
-        const r = localStorage.getItem(k);
-        if (r) return JSON.parse(r);
-      }
-    } catch {}
-    return null;
-  }
+
 
   // ── On mount: handle OAuth return, load data, try Drive ──────────────────
   useEffect(()=>{
@@ -944,10 +929,8 @@ export default function App() {
 
       // Load local data immediately (snappy UX)
       const local     = localLoad();
-      const localChat = localLoadChat();
       const localCount = local ? Object.keys(local).length : 0;
       setPlants(local || initPlants());
-      if (localChat) setChatMsgs(localChat);
 
       // Try Drive if we have any token
       const token = getStoredToken();
@@ -983,7 +966,6 @@ export default function App() {
 
             if (driveWins) {
               setPlants(data.plants);
-              if (data.chat) setChatMsgs(data.chat);
               localSave(data.plants);
               const n = driveCount;
               if (freshToken) showToast("☁️ Connected! " + n + " plants loaded");
@@ -1083,10 +1065,9 @@ export default function App() {
   useEffect(()=>{
     if(!plants) return;
     if(isFirstLoad.current){ isFirstLoad.current = false; return; }
-    persist(plants, chatMsgs);
+    persist(plants, []);
   },[plants]);
 
-  useEffect(()=>{ chatEnd.current?.scrollIntoView({behavior:"smooth"}); },[chatMsgs,chatLoading]);
 
   // ── All mutation functions follow the same pattern: ──────────────────────────
   // 1. Compute the full new plants object (don't rely on prev inside setPlants for persist)
@@ -1203,7 +1184,7 @@ export default function App() {
   }
 
   function exportData() {
-    const payload = { plants, chat: chatMsgs.slice(-40), exportedAt: new Date().toISOString(), version: "stable" };
+    const payload = { plants, exportedAt: new Date().toISOString(), version: "stable" };
     const blob = new Blob([JSON.stringify(payload, null, 2)], {type:"application/json"});
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1223,46 +1204,13 @@ export default function App() {
         const imported = data.plants || data; // support both wrapped and bare formats
         if (typeof imported !== "object" || Array.isArray(imported)) throw new Error("Invalid format");
         setPlants(imported);
-        if (data.chat) setChatMsgs(data.chat);
         localStorage.setItem("hoya-plants-stable", JSON.stringify({ plants: imported, savedAt: new Date().toISOString() }));
-        persist(imported, data.chat || chatMsgs);
+        persist(imported, []);
         showToast(`✅ Imported ${Object.keys(imported).length} plants`);
       } catch { showToast("⚠️ Couldn't read that file — is it a valid backup?"); }
     };
     reader.readAsText(file);
     setShowDataMenu(false);
-  }
-
-  async function sendChat(msg){
-    if(!msg.trim()||chatLoading) return;
-    setChatLoading(true);
-    const userMsg={role:"user",content:msg};
-    const next=[...chatMsgs,userMsg];
-    setChatMsgs(next); setChatInput("");
-    const ctx=tasks.filter(t=>t.overdue||t.due).slice(0,20)
-      .map(t=>{
-        const p=plants[t.plant]||{};
-        const meta=[];
-        if(p.location) meta.push(p.location);
-        if(p.potMaterial) meta.push(p.potMaterial);
-        if(p.potSize) meta.push(`${p.potSize}"`);
-        if(p.soilPreset) meta.push(`${p.soilPreset} mix`);
-        return `${t.plant}${meta.length?` (${meta.join(", ")})`:""}: ${CARE[t.type].label} (${t.age!==null?`${t.age}d since last`:"never logged"})`;
-      }).join("\n");
-    const sys=SYSTEM_PROMPT+(ctx?`\n\nCurrently due/overdue:\n${ctx}`:"");
-    try {
-      const res=await fetch("/.netlify/functions/chat",{
-        method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:sys,
-          messages:next.map(m=>({role:m.role,content:m.content}))})
-      });
-      const data=await res.json();
-      const reply=data.content?.map(b=>b.text||"").join("")||"No response.";
-      const final=[...next,{role:"assistant",content:reply}];
-      setChatMsgs(final);
-      try { localStorage.setItem("hoya-chat-stable", JSON.stringify(final.slice(-40))); persist(plants||{}, final.slice(-40)); } catch {}
-    } catch { setChatMsgs([...next,{role:"assistant",content:"Connection error — try again."}]); }
-    setChatLoading(false);
   }
 
   if(!plants) return (
@@ -1371,7 +1319,7 @@ export default function App() {
         </div>
         <div style={{display:"flex",gap:5,alignItems:"center",justifyContent:"space-between"}}>
           <div style={{display:"flex",gap:5}}>
-            {[["today","Today"],["all","All Plants"],["chat","AI Chat"]].map(([v,l])=>(
+            {[["today","Today"],["all","All Plants"]].map(([v,l])=>(
               <button key={v} onClick={()=>setView(v)} style={{
                 padding:"6px 15px",borderRadius:20,fontSize:12,
                 background:view===v?"rgba(196,137,90,0.2)":"transparent",
@@ -1543,52 +1491,6 @@ export default function App() {
       )}
 
       {/* CHAT */}
-      {view==="chat" && (
-        <div style={{display:"flex",flexDirection:"column",height:"calc(100vh - 148px)"}}>
-          <div style={{flex:1,overflowY:"auto",padding:"14px 16px",display:"flex",flexDirection:"column",gap:10}}>
-            {chatMsgs.length===0&&(
-              <div style={{textAlign:"center",padding:"36px 16px",animation:"fadeUp .3s ease"}}>
-                <div style={{fontSize:38,marginBottom:12}}>🤖</div>
-                <div style={{fontFamily:SERIF,fontSize:17,color:INK,marginBottom:6}}>What's on your mind?</div>
-                <div style={{fontSize:12,color:MUTED,lineHeight:1.8,marginBottom:20}}>Ask about your care queue, pests,<br/>specific plants, or general advice.</div>
-                <div style={{display:"flex",flexDirection:"column",gap:7}}>
-                  {["What's overdue right now?","Which plants need flushing soon?","Fungus gnats are showing up — help!","Care tips for Sigillatis Borneo","Why are my Krohniana leaves yellowing?"].map(q=>(
-                    <button key={q} onClick={()=>sendChat(q)} style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:20,padding:"8px 18px",fontSize:12,color:MUTED,fontFamily:FONT,textAlign:"left",boxShadow:"0 1px 3px rgba(61,53,48,0.06)"}}>{q}</button>
-                  ))}
-                </div>
-              </div>
-            )}
-            {chatMsgs.map((m,i)=>(
-              <div key={i} style={{alignSelf:m.role==="user"?"flex-end":"flex-start",maxWidth:"86%",
-                background:m.role==="user"?`${SAGE}15`:SURF,
-                border:`1px solid ${m.role==="user"?`${SAGE}40`:BORDER}`,
-                borderRadius:m.role==="user"?"14px 14px 4px 14px":"14px 14px 14px 4px",
-                padding:"11px 15px",fontSize:12.5,lineHeight:1.75,
-                color:m.role==="user"?SAGE_D:INK,whiteSpace:"pre-wrap",wordBreak:"break-word",
-                animation:"fadeUp .2s ease both"}}>{m.content}</div>
-            ))}
-            {chatLoading&&(
-              <div style={{alignSelf:"flex-start",background:CARD,border:`1px solid ${BORDER}`,borderRadius:"14px 14px 14px 4px",padding:"11px 16px",fontSize:12,color:MUTED,animation:"pulse 1.4s infinite",boxShadow:"0 1px 4px rgba(61,53,48,0.06)"}}>
-                thinking…
-              </div>
-            )}
-            <div ref={chatEnd}/>
-          </div>
-          <div style={{borderTop:`1px solid ${BORDER}`,padding:"10px 14px",display:"flex",gap:8,background:"rgba(250,248,245,0.97)"}}>
-            <input value={chatInput} onChange={e=>setChatInput(e.target.value)}
-              onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendChat(chatInput);}}}
-              placeholder="Ask about your plants…"
-              style={{flex:1,background:CARD,border:`1px solid ${BORDER}`,borderRadius:20,padding:"9px 16px",color:INK,fontFamily:FONT,fontSize:12.5}}
-            />
-            <button onClick={()=>sendChat(chatInput)} disabled={chatLoading||!chatInput.trim()} style={{
-              background:chatInput.trim()?SAGE:"transparent",
-              border:`1px solid ${chatInput.trim()?SAGE_D:BORDER}`,
-              borderRadius:20,padding:"9px 18px",fontSize:14,
-              color:chatInput.trim()?"#fff":MUTED,fontFamily:FONT,fontWeight:700
-            }}>↑</button>
-          </div>
-        </div>
-      )}
 
       {/* FAB */}
       {view!=="chat"&&(

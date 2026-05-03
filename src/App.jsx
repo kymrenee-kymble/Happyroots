@@ -222,20 +222,6 @@ function buildTasks(plants) {
   return tasks;
 }
 
-Care routine:
-- Every watering: Foliage Pro + Hydroguard (diluted). Water only when soil visually dry (clear nursery pots, chunky mix).
-- Monthly flush: replaces the next watering session when 30+ days have passed since last flush. Plain water only that day — skip Foliage Pro & Hydroguard. Flush until water runs from drainage.
-- Monthly top dress: thin layer of earthworm castings on soil surface.
-- Foliar spray as needed, not during lights-on hours.
-- Pest treatments logged with product used and next follow-up date.
-
-Adaptive learning: each plant's watering interval is learned from actual log history (weighted median). Pot material (terracotta dries ~30% faster than plastic), pot size, and soil mix (Chunky Aroid/Cactus Mix/Perlite drain fastest, Medium Aroid is middle, Coir+Perlite holds more moisture, Semi-hydro behaves like LECA) all modify the base interval before learning kicks in. Defer signals push intervals out; early watering pulls them in.
-
-NEVER recommend neem oil — spots and dulls waxy Hoya leaves.
-Preferred pest controls: Spinosad (Captain Jack's), insecticidal soap + rinse, diatomaceous earth, Bonide systemics, sulfur (applied evenings only, not during lights-on).
-Sigillatis has repeated failure history — flag extra caution for that plant.
-Plants have location, pot size, pot material, and soil mix fields — use them when giving care advice.
-Be warm, direct, and treat Kym as a knowledgeable peer.`
 
 // ── Palette: warm white, sage, terracotta, dusty rose ────────────────────────
 const BG      = "#faf8f5";   // warm white

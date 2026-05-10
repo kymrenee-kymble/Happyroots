@@ -183,21 +183,24 @@ function buildTasks(plants) {
           neverLogged:false, daysUntilDue:waterThreshold-waterAge });
       }
     }
-    // ── Topdress (and any other scheduled non-water/flush types) ─────────────
+    // ── Topdress ─────────────────────────────────────────────────────────────
+    // Use addedDate as fallback so never-topdressed plants age naturally
+    // instead of flooding "Never Logged". A plant added 31+ days ago will
+    // appear as overdue; a new plant won't appear until it's within the window.
     ["topdress"].forEach(type => {
       const threshold = effectiveInterval(p, type);
       const last = lastLogOf(p, type);
-      const age  = daysSince(last);
+      const baseline = last || p.addedDate || null;
+      const age  = daysSince(baseline);
       if (last && toPacific(new Date(last)).toDateString()===today) return;
       const def = p.deferred?.[type];
       if (def && new Date(def) > new Date() && toPacific(new Date(def)).toDateString()!==today) return;
       const overdue  = age!==null && age>threshold;
       const due      = age!==null && age>=threshold;
       const upcoming = !due && age!==null && age>=threshold*0.75;
-      const neverLogged = age===null;
       const daysUntilDue = age!==null ? threshold-age : null;
-      if (overdue||due||upcoming||neverLogged)
-        tasks.push({ id:`${name}::${type}`, plant:name, type, age, threshold, last, overdue, due, upcoming, neverLogged, daysUntilDue });
+      if (overdue||due||upcoming)
+        tasks.push({ id:`${name}::${type}`, plant:name, type, age, threshold, last, overdue, due, upcoming, neverLogged:false, daysUntilDue });
     });
   });
   tasks.sort((a,b)=>{

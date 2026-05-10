@@ -36,12 +36,12 @@ const STARTER_PLANTS = [
 const CARE = {
   water:    { label:"Water + Ferts",  icon:"💧", hue:"196", defaultDays:10,
               action:"Water thoroughly with Foliage Pro & Hydroguard (diluted). Check soil visually — water only when mix is dry.", scheduled:true },
-  flush:    { label:"Flush",          icon:"🚿", hue:"258", defaultDays:30,
-              action:"Plain water only — no fertilizer. Flush until water runs freely from the bottom to clear salt buildup.", scheduled:true },
+  flush:    { label:"Flush (replaces Water)", icon:"🚿", hue:"258", defaultDays:30,
+              action:"Plain water only today — skip Foliage Pro & Hydroguard. Flush until water runs freely from the bottom to clear salt buildup.", scheduled:true },
   topdress: { label:"Top Dress",      icon:"🪱", hue:"32",  defaultDays:30,
               action:"Apply a thin layer of earthworm castings to the soil surface. No watering needed immediately after.", scheduled:true },
-  foliar:   { label:"Foliar Spray",   icon:"🌿", hue:"88",  defaultDays:14,
-              action:"Spray foliage as needed. Avoid spraying during lights-on hours.", scheduled:true },
+  foliar:   { label:"Foliar Spray",   icon:"🌿", hue:"88",  defaultDays:null,
+              action:"Spray foliage as needed. Avoid spraying during lights-on hours.", scheduled:false },
   pest:     { label:"Pest Treatment", icon:"🐛", hue:"0",   defaultDays:null,
               action:"Log product used and next follow-up date.", scheduled:false },
   note:     { label:"Note / Observation", icon:"📝", hue:"45", defaultDays:null,
@@ -150,7 +150,41 @@ function buildTasks(plants) {
   const today = todayStr();
   const tasks = [];
   Object.entries(plants).forEach(([name, p]) => {
-    Object.keys(CARE).filter(t=>CARE[t].scheduled).forEach(type => {
+    // ── Water vs Flush rotation ──────────────────────────────────────────────
+    // Flush replaces a watering session — never appears alongside it.
+    // When watering is due AND it has been >=30d since last flush → show Flush.
+    // Logging a flush counts as a watering session for interval purposes.
+    const waterThreshold = effectiveInterval(p, "water");
+    const flushThreshold = 30;
+    const waterLast = lastLogOf(p, "water");
+    const flushLast = lastLogOf(p, "flush");
+    const lastWaterSession = (waterLast && flushLast)
+      ? (new Date(waterLast) > new Date(flushLast) ? waterLast : flushLast)
+      : (waterLast || flushLast);
+    const waterAge  = daysSince(lastWaterSession);
+    const flushAge  = daysSince(flushLast);
+    const sessionLoggedToday = lastWaterSession && toPacific(new Date(lastWaterSession)).toDateString()===today;
+    const waterDeferred = p.deferred?.["water"] && new Date(p.deferred["water"]) > new Date() && toPacific(new Date(p.deferred["water"])).toDateString()!==today;
+    const flushDeferred = p.deferred?.["flush"] && new Date(p.deferred["flush"]) > new Date() && toPacific(new Date(p.deferred["flush"])).toDateString()!==today;
+    const waterDue      = waterAge!==null && waterAge>=waterThreshold;
+    const waterUpcoming = !waterDue && waterAge!==null && waterAge>=waterThreshold*0.75;
+    const flushDue      = flushAge===null || flushAge>=flushThreshold;
+    if (!sessionLoggedToday && !waterDeferred) {
+      if (lastWaterSession===null) {
+        tasks.push({ id:`${name}::water`, plant:name, type:"water", age:null, threshold:waterThreshold,
+          last:null, overdue:false, due:false, upcoming:false, neverLogged:true, daysUntilDue:null });
+      } else if (waterDue && flushDue && !flushDeferred) {
+        tasks.push({ id:`${name}::flush`, plant:name, type:"flush", age:waterAge, threshold:waterThreshold,
+          last:flushLast, overdue:waterAge>waterThreshold, due:true, upcoming:false, neverLogged:false,
+          replacesWater:true, daysUntilDue:0 });
+      } else if (waterDue || waterUpcoming) {
+        tasks.push({ id:`${name}::water`, plant:name, type:"water", age:waterAge, threshold:waterThreshold,
+          last:lastWaterSession, overdue:waterAge>waterThreshold, due:waterDue, upcoming:waterUpcoming,
+          neverLogged:false, daysUntilDue:waterThreshold-waterAge });
+      }
+    }
+    // ── Topdress (and any other scheduled non-water/flush types) ─────────────
+    ["topdress"].forEach(type => {
       const threshold = effectiveInterval(p, type);
       const last = lastLogOf(p, type);
       const age  = daysSince(last);
@@ -161,7 +195,7 @@ function buildTasks(plants) {
       const due      = age!==null && age>=threshold;
       const upcoming = !due && age!==null && age>=threshold*0.75;
       const neverLogged = age===null;
-      const daysUntilDue = age!==null ? threshold - age : null;
+      const daysUntilDue = age!==null ? threshold-age : null;
       if (overdue||due||upcoming||neverLogged)
         tasks.push({ id:`${name}::${type}`, plant:name, type, age, threshold, last, overdue, due, upcoming, neverLogged, daysUntilDue });
     });
@@ -1014,9 +1048,12 @@ export default function App() {
         // silent
       } else {
         const p = prev[plantName];
+        const clearTypes = type==="flush" ? [type,"water"] : [type];
+        const newDeferred = {...(p.deferred||{})};
+        clearTypes.forEach(t=>{ newDeferred[t]=null; });
         n = { ...prev, [plantName]: { ...p,
           logs: [...(p.logs||[]), { type, date: new Date().toISOString(), note: typeof extra==="string" ? extra : extra?.note||"", ...(typeof extra==="object" && extra!==null ? {pestData:extra} : {}) }],
-          deferred: { ...(p.deferred||{}), [type]: null },
+          deferred: newDeferred,
         }};
         showToast(`${CARE[type].icon} ${CARE[type].label} logged`);
         setLogModal(null);
@@ -1223,7 +1260,7 @@ export default function App() {
         </div>
         <div style={{display:"flex",gap:5,alignItems:"center",justifyContent:"space-between"}}>
           <div style={{display:"flex",gap:5}}>
-            {[["today","Today"],["all","All Plants"],["chat","AI Chat"]].map(([v,l])=>(
+            {[["today","Today"],["all","All Plants"]].map(([v,l])=>(
               <button key={v} onClick={()=>setView(v)} style={{
                 padding:"6px 15px",borderRadius:20,fontSize:12,
                 background:view===v?"rgba(196,137,90,0.2)":"transparent",
@@ -1387,58 +1424,8 @@ export default function App() {
         </div>
       )}
 
-      {/* CHAT */}
-      {view==="chat" && (
-        <div style={{display:"flex",flexDirection:"column",height:"calc(100vh - 148px)"}}>
-          <div style={{flex:1,overflowY:"auto",padding:"14px 16px",display:"flex",flexDirection:"column",gap:10}}>
-            {chatMsgs.length===0&&(
-              <div style={{textAlign:"center",padding:"36px 16px",animation:"fadeUp .3s ease"}}>
-                <div style={{fontSize:38,marginBottom:12}}>🤖</div>
-                <div style={{fontFamily:SERIF,fontSize:17,color:INK,marginBottom:6}}>What's on your mind?</div>
-                <div style={{fontSize:12,color:MUTED,lineHeight:1.8,marginBottom:20}}>Ask about your care queue, pests,<br/>specific plants, or general advice.</div>
-                <div style={{display:"flex",flexDirection:"column",gap:7}}>
-                  {["What's overdue right now?","Which plants need flushing soon?","Fungus gnats are showing up — help!","Care tips for Sigillatis Borneo","Why are my Krohniana leaves yellowing?"].map(q=>(
-                    <button key={q} onClick={()=>sendChat(q)} style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:20,padding:"8px 18px",fontSize:12,color:MUTED,fontFamily:FONT,textAlign:"left",boxShadow:"0 1px 3px rgba(61,53,48,0.06)"}}>{q}</button>
-                  ))}
-                </div>
-              </div>
-            )}
-            {chatMsgs.map((m,i)=>(
-              <div key={i} style={{alignSelf:m.role==="user"?"flex-end":"flex-start",maxWidth:"86%",
-                background:m.role==="user"?`${SAGE}15`:SURF,
-                border:`1px solid ${m.role==="user"?`${SAGE}40`:BORDER}`,
-                borderRadius:m.role==="user"?"14px 14px 4px 14px":"14px 14px 14px 4px",
-                padding:"11px 15px",fontSize:12.5,lineHeight:1.75,
-                color:m.role==="user"?SAGE_D:INK,whiteSpace:"pre-wrap",wordBreak:"break-word",
-                animation:"fadeUp .2s ease both"}}>{m.content}</div>
-            ))}
-            {chatLoading&&(
-              <div style={{alignSelf:"flex-start",background:CARD,border:`1px solid ${BORDER}`,borderRadius:"14px 14px 14px 4px",padding:"11px 16px",fontSize:12,color:MUTED,animation:"pulse 1.4s infinite",boxShadow:"0 1px 4px rgba(61,53,48,0.06)"}}>
-                thinking…
-              </div>
-            )}
-            <div ref={chatEnd}/>
-          </div>
-          <div style={{borderTop:`1px solid ${BORDER}`,padding:"10px 14px",display:"flex",gap:8,background:"rgba(250,248,245,0.97)"}}>
-            <input value={chatInput} onChange={e=>setChatInput(e.target.value)}
-              onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendChat(chatInput);}}}
-              placeholder="Ask about your plants…"
-              style={{flex:1,background:CARD,border:`1px solid ${BORDER}`,borderRadius:20,padding:"9px 16px",color:INK,fontFamily:FONT,fontSize:12.5}}
-            />
-            <button onClick={()=>sendChat(chatInput)} disabled={chatLoading||!chatInput.trim()} style={{
-              background:chatInput.trim()?SAGE:"transparent",
-              border:`1px solid ${chatInput.trim()?SAGE_D:BORDER}`,
-              borderRadius:20,padding:"9px 18px",fontSize:14,
-              color:chatInput.trim()?"#fff":MUTED,fontFamily:FONT,fontWeight:700
-            }}>↑</button>
-          </div>
-        </div>
-      )}
-
       {/* FAB */}
-      {view!=="chat"&&(
-        <button onClick={()=>setAddModal(true)} style={{position:"fixed",bottom:22,right:20,width:52,height:52,borderRadius:"50%",background:SAGE,border:`1.5px solid ${SAGE_D}`,fontSize:22,boxShadow:"0 4px 20px rgba(90,107,80,0.35)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",zIndex:40}} title="Add plant">＋</button>
-      )}
+      <button onClick={()=>setAddModal(true)} style={{position:"fixed",bottom:22,right:20,width:52,height:52,borderRadius:"50%",background:SAGE,border:`1.5px solid ${SAGE_D}`,fontSize:22,boxShadow:"0 4px 20px rgba(90,107,80,0.35)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",zIndex:40}} title="Add plant">＋</button>
 
 
       {detailPlant&&plants[detailPlant]&&(

@@ -163,16 +163,18 @@ function buildTasks(plants) {
     const waterAge  = daysSince(lastWaterSession);
     const flushAge  = daysSince(flushLast);
     const sessionLoggedToday = lastWaterSession && toPacific(new Date(lastWaterSession)).toDateString()===today;
-    const waterDeferred = p.deferred?.["water"] && new Date(p.deferred["water"]) > new Date() && toPacific(new Date(p.deferred["water"])).toDateString()!==today;
-    const flushDeferred = p.deferred?.["flush"] && new Date(p.deferred["flush"]) > new Date() && toPacific(new Date(p.deferred["flush"])).toDateString()!==today;
     const waterDue      = waterAge!==null && waterAge>=waterThreshold;
     const waterUpcoming = !waterDue && waterAge!==null && waterAge>=waterThreshold*0.75;
     const flushDue      = flushAge===null || flushAge>=flushThreshold;
-    if (!sessionLoggedToday && !waterDeferred) {
+    // buildTasks only decides WHAT task type to show based on schedule.
+    // Deferral filtering (active vs deferred) is handled by the useEffect,
+    // which checks p.deferred[t.type] — so flush deferred → flush stays deferred,
+    // not incorrectly replaced by a water-overdue task.
+    if (!sessionLoggedToday) {
       if (lastWaterSession===null) {
         tasks.push({ id:`${name}::water`, plant:name, type:"water", age:null, threshold:waterThreshold,
           last:null, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
-      } else if (waterDue && flushDue && !flushDeferred) {
+      } else if (waterDue && flushDue) {
         tasks.push({ id:`${name}::flush`, plant:name, type:"flush", age:waterAge, threshold:waterThreshold,
           last:flushLast, overdue:waterAge>waterThreshold, due:true, upcoming:false, neverLogged:false,
           replacesWater:true, daysUntilDue:0 });

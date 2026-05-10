@@ -34,7 +34,7 @@ const STARTER_PLANTS = [
 ];
 
 const CARE = {
-  water:    { label:"Water + Ferts",  icon:"💧", hue:"196", defaultDays:10,
+  water:    { label:"Water + Ferts",  icon:"💧", hue:"196", defaultDays:7,
               action:"Water thoroughly with Foliage Pro & Hydroguard (diluted). Check soil visually — water only when mix is dry.", scheduled:true },
   flush:    { label:"Flush (replaces Water)", icon:"🚿", hue:"258", defaultDays:30,
               action:"Plain water only today — skip Foliage Pro & Hydroguard. Flush until water runs freely from the bottom to clear salt buildup.", scheduled:true },
@@ -48,7 +48,7 @@ const CARE = {
               action:"Record anything worth remembering — new growth, stress signs, changes.", scheduled:false },
 };
 
-const DEFAULT_SCHED = { waterDays:10, flushDays:30, topdressDays:30, foliarDays:14 };
+const DEFAULT_SCHED = { waterDays:7, flushDays:30, topdressDays:30, foliarDays:14 };
 
 // Adaptive learning: weighted median of actual intervals
 // - wet signals (defer days) push interval out: each deferred day adds 0.5d
@@ -80,7 +80,7 @@ function learnedInterval(logs, type, defaultDays) {
 
 function effectiveInterval(plant, type) {
   const key = type+"Days";
-  const defaults = { waterDays:10, flushDays:30, topdressDays:30, foliarDays:14 };
+  const defaults = { waterDays:7, flushDays:30, topdressDays:30, foliarDays:14 };
   if (plant.manualOverrides?.[key]) return plant.manualOverrides[key];
   const learned = learnedInterval(plant.logs||[], type, defaults[key]);
   const base = learned || plant.schedule?.[key] || defaults[key];
@@ -126,8 +126,7 @@ function potModifier(plant) {
   let mod = 1.0;
   if (plant.potMaterial === "terracotta") mod *= 0.72; // dries faster → shorter interval
   const size = parseInt(plant.potSize)||0;
-  if (size > 0 && size <= 2)  mod *= 0.80; // tiny — dries very fast
-  else if (size <= 4)         mod *= 0.90;
+  if (size > 0 && size <= 2)  mod *= 0.57; // tiny — ~4d on base 7d
   else if (size >= 8)         mod *= 1.15; // big pot holds moisture longer
   // Chunky mix dries faster; fine mix holds more water
   if      (plant.soilPreset === "Chunky Aroid")   mod *= 0.85; // drains fast
@@ -362,7 +361,7 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename}){
 
   const intervals = Object.entries(CARE).map(([type,c])=>{
     const key=type+"Days";
-    const defs={waterDays:10,flushDays:30,topdressDays:30,foliarDays:14};
+    const defs={waterDays:7,flushDays:30,topdressDays:30,foliarDays:14};
     const learned=learnedInterval(plant.logs||[],type,defs[key]);
     const manual=plant.manualOverrides?.[key];
     const eff=manual||learned||plant.schedule?.[key]||defs[key];

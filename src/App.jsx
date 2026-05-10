@@ -251,7 +251,7 @@ function Toast({msg,visible}){
 }
 
 // One card per plant, showing ALL due actions for that plant
-function PlantTaskCard({plantName, tasks, onDone, onDefer, onOpenPlant}){
+function PlantTaskCard({plantName, location, tasks, onDone, onDefer, onOpenPlant}){
   const [wetFor, setWetFor] = useState(null); // type currently showing defer picker
 
   // Highest urgency across all tasks for this plant drives the card style
@@ -269,6 +269,7 @@ function PlantTaskCard({plantName, tasks, onDone, onDefer, onOpenPlant}){
       <div style={{display:"flex",alignItems:"center",gap:10,padding:"11px 14px 8px"}}>
         <div style={{flex:1,minWidth:0}}>
           <div style={{fontSize:13.5,color:INK,fontWeight:600,fontFamily:SERIF,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{plantName}</div>
+          {location&&<div style={{fontSize:10,color:SAGE_D,marginTop:1}}>📍 {location}</div>}
         </div>
         <button onClick={()=>onOpenPlant(plantName)} style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:20,padding:"3px 11px",fontSize:10,color:MUTED,fontFamily:FONT,flexShrink:0,letterSpacing:0.3}}>
           details
@@ -1208,6 +1209,7 @@ export default function App() {
         <div style={{display:"flex",flexDirection:"column",gap:7}}>
           {groups.map(({name,tasks:grpTasks})=>(
             <PlantTaskCard key={name} plantName={name} tasks={grpTasks}
+              location={plants[name]?.location||""}
               onDone={t=>setLogModal({plant:t.plant,type:t.type})}
               onDefer={(t,d)=>deferTask(t,d)}
               onOpenPlant={name=>{setDetailPlant(name);}}

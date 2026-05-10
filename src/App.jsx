@@ -172,7 +172,7 @@ function buildTasks(plants) {
     if (!sessionLoggedToday && !waterDeferred) {
       if (lastWaterSession===null) {
         tasks.push({ id:`${name}::water`, plant:name, type:"water", age:null, threshold:waterThreshold,
-          last:null, overdue:false, due:false, upcoming:false, neverLogged:true, daysUntilDue:null });
+          last:null, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
       } else if (waterDue && flushDue && !flushDeferred) {
         tasks.push({ id:`${name}::flush`, plant:name, type:"flush", age:waterAge, threshold:waterThreshold,
           last:flushLast, overdue:waterAge>waterThreshold, due:true, upcoming:false, neverLogged:false,
@@ -286,9 +286,9 @@ function PlantTaskCard({plantName, location, tasks, onDone, onDefer, onOpenPlant
           const isOD = task.overdue;
           const isDue = task.due && !task.overdue;
           const accentColor = isOD ? "#f09070" : isDue ? `hsl(${c.hue},65%,68%)` : "#8a7a60";
-          const status = isOD    ? `${task.age-task.threshold}d overdue`
-            : task.due            ? `${task.age}d since last`
-            : task.neverLogged    ? "never logged"
+          const status = isOD                        ? `${task.age-task.threshold}d overdue`
+            : task.due && task.age===null              ? "never watered — water now"
+            : task.due                                 ? `${task.age}d since last`
             : `in ~${task.threshold-task.age}d`;
 
           return (
@@ -1323,7 +1323,6 @@ export default function App() {
             <PlantSection color="#d4b060" label="Due Today"      taskList={tasks.filter(t=>t.due&&!t.overdue)} />
             <PlantSection color="#c4a060" label="Due Tomorrow"   taskList={tasks.filter(t=>!t.due&&!t.overdue&&t.daysUntilDue===1)} />
             <PlantSection color="#a09070" label="Coming Up"      taskList={tasks.filter(t=>!t.due&&!t.overdue&&t.upcoming&&t.daysUntilDue!==1)} />
-            <PlantSection color="#7a8c6e" label="Never Logged"   taskList={tasks.filter(t=>t.neverLogged)} />
             {doneTasks.length>0&&(
               <section style={{marginBottom:20}}>
                 <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>Done Today ✓</div>

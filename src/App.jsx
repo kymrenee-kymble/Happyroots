@@ -1453,9 +1453,8 @@ export default function App() {
         <PlantSheet name={detailPlant} plant={plants[detailPlant]}
           onLog={(name,type,extra)=>{
             if(type==="__override__"||type==="__meta__"){
-              logCare(name,type,extra);          // silent saves, stay on sheet
+              logCare(name,type,extra);
             } else {
-              setDetailPlant(null);              // close sheet, open log modal
               setLogModal({plant:name,type});
             }
           }}

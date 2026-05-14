@@ -145,6 +145,22 @@ function initPlants() {
   return p;
 }
 
+// One-time migration: reset waterDays from old default (10) to new default (7)
+// for any plant that hasn't been manually overridden or learned yet.
+function migratePlants(plants) {
+  let changed = false;
+  const out = {};
+  Object.entries(plants).forEach(([name, p]) => {
+    if (p.schedule?.waterDays === 10 && !p.manualOverrides?.waterDays) {
+      out[name] = { ...p, schedule: { ...p.schedule, waterDays: 7 } };
+      changed = true;
+    } else {
+      out[name] = p;
+    }
+  });
+  return changed ? out : plants;
+}
+
 function buildTasks(plants) {
   const today = todayStr();
   const tasks = [];
@@ -894,7 +910,7 @@ export default function App() {
       const local = readLocal();
       const localChat = readLocalChat();
       console.log(local ? ("✓ loaded " + Object.keys(local).length + " plants") : "⚠ no local data — starting fresh");
-      setPlants(local || initPlants());
+      setPlants(migratePlants(local || initPlants()));
       if (localChat) setChatMsgs(localChat);
 
       // 2. Try Drive — always. Silent re-auth if previously connected.
@@ -904,7 +920,7 @@ export default function App() {
       try {
         const driveData = await driveReadFile();
         if (driveData?.plants) {
-          setPlants(driveData.plants);
+          setPlants(migratePlants(driveData.plants));
           if (driveData.chat) setChatMsgs(driveData.chat);
           try { localStorage.setItem("hr-session", JSON.stringify({ plants: driveData.plants, savedAt: driveData.savedAt })); } catch {}
           setDriveAuthed(true); driveAuthedRef.current = true;
@@ -943,7 +959,7 @@ export default function App() {
       if (driveData?.plants) {
         const count = Object.keys(driveData.plants).length;
         console.log("✓ loaded " + count + " plants from Drive");
-        setPlants(driveData.plants);
+        setPlants(migratePlants(driveData.plants));
         if (driveData.chat) setChatMsgs(driveData.chat);
         try { localStorage.setItem("hr-session", JSON.stringify({ plants: driveData.plants, savedAt: driveData.savedAt })); } catch {}
         setDriveStatus("saved");

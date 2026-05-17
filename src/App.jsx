@@ -192,7 +192,10 @@ function buildTasks(plants) {
     const recentExpiredDef = [expiredWaterDef, expiredFlushDef]
       .filter(Boolean).sort((a,b) => new Date(b) - new Date(a))[0] || null;
     const deferExpiredAge = recentExpiredDef ? daysSince(recentExpiredDef) : null;
-    const isWaterOverdue = waterDue && (deferExpiredAge !== null ? deferExpiredAge > 0 : waterAge > waterThreshold);
+    // Treat the defer expiry as a virtual watering: overdue only if waterThreshold days have
+    // passed since the defer expired (not since the original watering date)
+    const virtualWaterAge = deferExpiredAge !== null ? deferExpiredAge : waterAge;
+    const isWaterOverdue = waterDue && virtualWaterAge > waterThreshold;
     // buildTasks only decides WHAT task type to show based on schedule.
     // Deferral filtering (active vs deferred) is handled by the useEffect,
     // which checks p.deferred[t.type] — so flush deferred → flush stays deferred,

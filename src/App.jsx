@@ -60,11 +60,14 @@ function learnedInterval(logs, type, defaultDays) {
   if (typed.length < 3) return null;
   const pairs = [];
   for (let i=1; i<typed.length; i++) {
+    if (typed[i].early) continue; // early logs excluded — they'd artificially shorten the interval
     const d = Math.round((new Date(typed[i].date)-new Date(typed[i-1].date))/86400000);
     if (d<=0 || d>120) continue;
+    // Cap at 1.5x default so missed/forgotten waterings don't inflate the learned interval
+    const cappedD = Math.min(d, Math.round(defaultDays * 1.5));
     const recency = 0.5 + (i / typed.length);         // 0.5–1.5, recent = higher
     const wetBoost = (typed[i-1].wetDays||0) * 0.5;  // deferred days push interval out
-    const adjusted = Math.max(1, d + wetBoost);
+    const adjusted = Math.max(1, cappedD + wetBoost);
     pairs.push({ val: adjusted, weight: recency });
   }
   if (pairs.length < 2) return null;
@@ -182,6 +185,14 @@ function buildTasks(plants) {
     const waterDue      = waterAge!==null && waterAge>=waterThreshold;
     const waterUpcoming = !waterDue && waterAge!==null && waterAge>=waterThreshold*0.75;
     const flushDue      = flushAge===null || flushAge>=flushThreshold;
+    // When a deferral has expired, count overdue days from the expiry date, not the original watering.
+    // This prevents a deferred plant from jumping straight to overdue — it shows "Due Today" on expiry day.
+    const expiredWaterDef = p.deferred?.water && daysSince(p.deferred.water) >= 0 ? p.deferred.water : null;
+    const expiredFlushDef = p.deferred?.flush && daysSince(p.deferred.flush) >= 0 ? p.deferred.flush : null;
+    const recentExpiredDef = [expiredWaterDef, expiredFlushDef]
+      .filter(Boolean).sort((a,b) => new Date(b) - new Date(a))[0] || null;
+    const deferExpiredAge = recentExpiredDef ? daysSince(recentExpiredDef) : null;
+    const isWaterOverdue = waterDue && (deferExpiredAge !== null ? deferExpiredAge > 0 : waterAge > waterThreshold);
     // buildTasks only decides WHAT task type to show based on schedule.
     // Deferral filtering (active vs deferred) is handled by the useEffect,
     // which checks p.deferred[t.type] — so flush deferred → flush stays deferred,
@@ -192,11 +203,11 @@ function buildTasks(plants) {
           last:null, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
       } else if (waterDue && flushDue) {
         tasks.push({ id:`${name}::flush`, plant:name, type:"flush", age:waterAge, threshold:waterThreshold,
-          last:flushLast, overdue:waterAge>waterThreshold, due:true, upcoming:false, neverLogged:false,
+          last:flushLast, overdue:isWaterOverdue, due:true, upcoming:false, neverLogged:false,
           replacesWater:true, daysUntilDue:0 });
       } else if (waterDue || waterUpcoming) {
         tasks.push({ id:`${name}::water`, plant:name, type:"water", age:waterAge, threshold:waterThreshold,
-          last:lastWaterSession, overdue:waterAge>waterThreshold, due:waterDue, upcoming:waterUpcoming,
+          last:lastWaterSession, overdue:isWaterOverdue, due:waterDue, upcoming:waterUpcoming,
           neverLogged:false, daysUntilDue:waterThreshold-waterAge });
       }
     }
@@ -579,6 +590,7 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename}){
                     {meta?.product&&<div style={{fontSize:10,color:MUTED,marginTop:2}}>Product: {meta.product}</div>}
                     {meta?.nextDate&&<div style={{fontSize:10,color:SAGE_D,marginTop:2}}>Next due: {fmtDate(meta.nextDate)}</div>}
                     {(meta?.note||noteStr)&&<div style={{fontSize:10,color:MUTED,fontStyle:"italic",marginTop:2}}>{meta?.note||noteStr}</div>}
+                    {l.early&&<div style={{fontSize:10,color:SAGE_D,marginTop:2}}>⏰ Pre-watered — interval preserved</div>}
                   </div>
                 );
               })}
@@ -631,15 +643,19 @@ function AddPlantModal({onAdd,onClose}){
 function LogModal({plant,type,onLog,onClose}){
   const c=CARE[type];
   const [note,setNote]=useState("");
+  const [isEarly,setIsEarly]=useState(false);
   const [pestProduct,setPestProduct]=useState("");
   const [pestNextDate,setPestNextDate]=useState("");
   const isPest = type==="pest";
   const isNote = type==="note";
+  const canBeEarly = type==="water" || type==="flush";
 
   const handleLog = () => {
     if (isPest) {
       const payload = { product:pestProduct, nextDate:pestNextDate, note };
       onLog(plant, type, payload);
+    } else if (canBeEarly) {
+      onLog(plant, type, { note, early: isEarly });
     } else {
       onLog(plant, type, note);
     }
@@ -674,13 +690,25 @@ function LogModal({plant,type,onLog,onClose}){
             </div>
           </div>
         )}
+        {canBeEarly && (
+          <button onClick={()=>setIsEarly(e=>!e)}
+            style={{display:"flex",alignItems:"center",gap:8,background:isEarly?`${SAGE}18`:SURF,
+              border:`1px solid ${isEarly?SAGE:BORDER}`,borderRadius:8,padding:"8px 12px",
+              fontSize:11,color:isEarly?SAGE_D:MUTED,fontFamily:FONT,marginBottom:11,width:"100%",textAlign:"left",cursor:"pointer"}}>
+            <span style={{fontSize:14,lineHeight:1}}>{isEarly?"✓":"○"}</span>
+            <div>
+              <div style={{fontWeight:600}}>Pre-watering (going away)</div>
+              <div style={{fontSize:9.5,marginTop:1,fontStyle:"italic",opacity:0.8}}>Updates next due date · won't shorten the watering interval</div>
+            </div>
+          </button>
+        )}
         <textarea value={note} onChange={e=>setNote(e.target.value)}
           placeholder={isPest?"Optional notes — e.g. signs observed, dilution used":isNote?"What did you observe?":"Optional note — e.g. soil was nearly dry, slight wilt"}
           rows={isPest?2:3}
           style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:9,padding:"10px 13px",color:INK,fontFamily:FONT,fontSize:12,resize:"none",marginBottom:13}}
         />
         <div style={{display:"flex",gap:8}}>
-          <button onClick={handleLog} style={{flex:1,background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:10,padding:"11px",fontSize:13,color:"#fff",fontFamily:FONT,fontWeight:600}}>Log today</button>
+          <button onClick={handleLog} style={{flex:1,background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:10,padding:"11px",fontSize:13,color:"#fff",fontFamily:FONT,fontWeight:600}}>{isEarly?"Log early":"Log today"}</button>
           <button onClick={onClose} style={{flex:1,background:SURF,border:`1px solid ${BORDER}`,borderRadius:10,padding:"11px",fontSize:13,color:MUTED,fontFamily:FONT}}>Cancel</button>
         </div>
       </div>
@@ -1032,7 +1060,7 @@ export default function App() {
       const last=lastLogOf(p,t.type);
       if(last&&toPacific(new Date(last)).toDateString()===today){done.push(t);return;}
       const def=p.deferred?.[t.type];
-      if(def&&(toPacific(new Date(def)).toDateString()===today||new Date(def)>new Date())){deferred.push(t);return;}
+      if(def && daysSince(def) < 0){deferred.push(t);return;}
       active.push(t);
     });
     setTasks(active); setDoneTasks(done); setDeferred(deferred);
@@ -1072,8 +1100,15 @@ export default function App() {
         const clearTypes = type==="flush" ? [type,"water"] : [type];
         const newDeferred = {...(p.deferred||{})};
         clearTypes.forEach(t=>{ newDeferred[t]=null; });
+        const logEntry = {
+          type,
+          date: new Date().toISOString(),
+          note: typeof extra === "string" ? extra : (extra?.note || ""),
+        };
+        if (extra?.early) logEntry.early = true;
+        if (type === "pest" && typeof extra === "object") logEntry.pestData = extra;
         n = { ...prev, [plantName]: { ...p,
-          logs: [...(p.logs||[]), { type, date: new Date().toISOString(), note: typeof extra==="string" ? extra : extra?.note||"", ...(typeof extra==="object" && extra!==null ? {pestData:extra} : {}) }],
+          logs: [...(p.logs||[]), logEntry],
           deferred: newDeferred,
         }};
         showToast(`${CARE[type].icon} ${CARE[type].label} logged`);
@@ -1223,19 +1258,40 @@ export default function App() {
   const PlantSection = ({color,label,taskList}) => {
     const groups = groupByPlant(taskList);
     if (!groups.length) return null;
+    // Group by location: named locations sorted A–Z, "No location" at end
+    const locationMap = {};
+    groups.forEach(({name, tasks: grpTasks}) => {
+      const loc = plants[name]?.location || "";
+      if (!locationMap[loc]) locationMap[loc] = [];
+      locationMap[loc].push({name, tasks: grpTasks});
+    });
+    const sortedLocs = Object.keys(locationMap).sort((a,b) => {
+      if (!a) return 1; if (!b) return -1;
+      return a.localeCompare(b);
+    });
+    const showLocHeaders = sortedLocs.length > 1;
     return (
       <section style={{marginBottom:20}}>
         <div style={{fontSize:10,color,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>{label} · {groups.length} plant{groups.length!==1?"s":""}</div>
-        <div style={{display:"flex",flexDirection:"column",gap:7}}>
-          {groups.map(({name,tasks:grpTasks})=>(
-            <PlantTaskCard key={name} plantName={name} tasks={grpTasks}
-              location={plants[name]?.location||""}
-              onDone={t=>setLogModal({plant:t.plant,type:t.type})}
-              onDefer={(t,d)=>deferTask(t,d)}
-              onOpenPlant={name=>{setDetailPlant(name);}}
-            />
-          ))}
-        </div>
+        {sortedLocs.map(loc => (
+          <div key={loc||"__none__"} style={{marginBottom: showLocHeaders ? 10 : 0}}>
+            {showLocHeaders && (
+              <div style={{fontSize:9.5,color:MUTED,marginBottom:6,paddingLeft:2,fontStyle:"italic",letterSpacing:0.3}}>
+                {loc ? `📍 ${loc}` : "No location set"}
+              </div>
+            )}
+            <div style={{display:"flex",flexDirection:"column",gap:7}}>
+              {locationMap[loc].map(({name,tasks:grpTasks})=>(
+                <PlantTaskCard key={name} plantName={name} tasks={grpTasks}
+                  location={plants[name]?.location||""}
+                  onDone={t=>setLogModal({plant:t.plant,type:t.type})}
+                  onDefer={(t,d)=>deferTask(t,d)}
+                  onOpenPlant={name=>{setDetailPlant(name);}}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
       </section>
     );
   };

@@ -191,7 +191,12 @@ function buildTasks(plants) {
     const expiredFlushDef = p.deferred?.flush && daysSince(p.deferred.flush) >= 0 ? p.deferred.flush : null;
     const recentExpiredDef = [expiredWaterDef, expiredFlushDef]
       .filter(Boolean).sort((a,b) => new Date(b) - new Date(a))[0] || null;
-    const deferExpiredAge = recentExpiredDef ? daysSince(recentExpiredDef) : null;
+    // Only use a defer expiry as the overdue reference if it happened AFTER the last actual watering.
+    // A stale deferral from before the last watering should have no effect.
+    const deferIsAfterWatering = recentExpiredDef && lastWaterSession
+      ? new Date(recentExpiredDef) > new Date(lastWaterSession)
+      : recentExpiredDef !== null;
+    const deferExpiredAge = (recentExpiredDef && deferIsAfterWatering) ? daysSince(recentExpiredDef) : null;
     // Treat the defer expiry as a virtual watering: overdue only if waterThreshold days have
     // passed since the defer expired (not since the original watering date)
     const virtualWaterAge = deferExpiredAge !== null ? deferExpiredAge : waterAge;
@@ -215,24 +220,20 @@ function buildTasks(plants) {
       }
     }
     // ── Topdress ─────────────────────────────────────────────────────────────
-    // Use addedDate as fallback so never-topdressed plants age naturally
-    // instead of flooding "Never Logged". A plant added 31+ days ago will
-    // appear as overdue; a new plant won't appear until it's within the window.
-    ["topdress"].forEach(type => {
-      const threshold = effectiveInterval(p, type);
-      const last = lastLogOf(p, type);
-      const baseline = last || p.addedDate || null;
-      const age  = daysSince(baseline);
-      if (last && toPacific(new Date(last)).toDateString()===today) return;
-      const def = p.deferred?.[type];
-      if (def && new Date(def) > new Date() && toPacific(new Date(def)).toDateString()!==today) return;
-      const overdue  = age!==null && age>threshold;
-      const due      = age!==null && age>=threshold;
-      const upcoming = !due && age!==null && age>=threshold*0.75;
-      const daysUntilDue = age!==null ? threshold-age : null;
-      if (overdue||due||upcoming)
-        tasks.push({ id:`${name}::${type}`, plant:name, type, age, threshold, last, overdue, due, upcoming, neverLogged:false, daysUntilDue });
-    });
+    // Topdress is always done alongside a watering session, never independently.
+    // Only generate the task when water is due — it disappears automatically after
+    // the user waters (waterDue becomes false), so it never accumulates as overdue.
+    if (waterDue) {
+      const tdThreshold = effectiveInterval(p, "topdress");
+      const tdLast = lastLogOf(p, "topdress");
+      const tdBaseline = tdLast || p.addedDate || null;
+      const tdAge = daysSince(tdBaseline);
+      const tdLoggedToday = tdLast && toPacific(new Date(tdLast)).toDateString() === today;
+      if (!tdLoggedToday && tdAge !== null && tdAge >= tdThreshold) {
+        tasks.push({ id:`${name}::topdress`, plant:name, type:"topdress", age:tdAge, threshold:tdThreshold,
+          last:tdLast, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
+      }
+    }
   });
   tasks.sort((a,b)=>{
     const r=t=>t.overdue?0:t.due?1:t.neverLogged?2:3;

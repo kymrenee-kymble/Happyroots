@@ -225,7 +225,9 @@ function buildTasks(plants) {
     // (if water is deferred, topdress waits too — they're always done together).
     const waterSessionDeferred = (p.deferred?.water && daysSince(p.deferred.water) < 0) ||
                                   (p.deferred?.flush && daysSince(p.deferred.flush) < 0);
-    if (waterDue && !waterSessionDeferred) {
+    // Show topdress when water is due OR was already logged today (so it stays visible
+    // on the card after the user completes water, giving them a chance to log topdress too)
+    if ((waterDue || sessionLoggedToday) && !waterSessionDeferred) {
       const tdThreshold = effectiveInterval(p, "topdress");
       const tdLast = lastLogOf(p, "topdress");
       const tdBaseline = tdLast || p.addedDate || null;
@@ -305,10 +307,10 @@ function PlantTaskCard({plantName, location, tasks, onDone, onDefer, onOpenPlant
       {/* Plant name row */}
       <div style={{display:"flex",alignItems:"center",gap:10,padding:"11px 14px 8px"}}>
         <div style={{flex:1,minWidth:0}}>
-          <div style={{fontSize:13.5,color:INK,fontWeight:600,fontFamily:SERIF,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{plantName}</div>
-          {location&&<div style={{fontSize:10,color:SAGE_D,marginTop:1}}>📍 {location}</div>}
+          <div style={{fontSize:16,color:INK,fontWeight:600,fontFamily:SERIF,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{plantName}</div>
+          {location&&<div style={{fontSize:12,color:SAGE_D,marginTop:1}}>📍 {location}</div>}
         </div>
-        <button onClick={()=>onOpenPlant(plantName)} style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:20,padding:"3px 11px",fontSize:10,color:MUTED,fontFamily:FONT,flexShrink:0,letterSpacing:0.3}}>
+        <button onClick={()=>onOpenPlant(plantName)} style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:20,padding:"4px 12px",fontSize:12,color:MUTED,fontFamily:FONT,flexShrink:0,letterSpacing:0.3}}>
           details
         </button>
       </div>
@@ -330,23 +332,23 @@ function PlantTaskCard({plantName, location, tasks, onDone, onDefer, onOpenPlant
               <div style={{display:"flex",alignItems:"center",gap:10,padding:"7px 14px",borderTop:`1px solid ${BORDER}`}}>
                 <span style={{fontSize:16,flexShrink:0,width:22,textAlign:"center"}}>{c.icon}</span>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:12,color:isOD?TERRA:isDue?SAGE_D:MUTED,fontWeight:600}}>{c.label}</div>
-                  <div style={{fontSize:10,color:MUTED,marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.action}</div>
+                  <div style={{fontSize:14,color:isOD?TERRA:isDue?SAGE_D:MUTED,fontWeight:600}}>{c.label}</div>
+                  <div style={{fontSize:11,color:MUTED,marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.action}</div>
                 </div>
-                <div style={{fontSize:10,color:isOD?TERRA:isDue?CLAY:MUTED,flexShrink:0,marginRight:6,fontStyle:"italic"}}>{status}</div>
+                <div style={{fontSize:12,color:isOD?TERRA:isDue?CLAY:MUTED,flexShrink:0,marginRight:6,fontStyle:"italic"}}>{status}</div>
                 <div style={{display:"flex",gap:5,flexShrink:0}}>
                   <button
                     onClick={()=>setWetFor(wetFor===task.type?null:task.type)}
                     style={{
                       background:wetFor===task.type?`${SAGE}18`:SURF,
                       border:`1px solid ${wetFor===task.type?SAGE:BORDER}`,
-                      borderRadius:20,padding:"4px 9px",fontSize:10,
+                      borderRadius:20,padding:"5px 11px",fontSize:12,
                       color:wetFor===task.type?SAGE_D:MUTED,fontFamily:FONT}}>
                     defer
                   </button>
                   <button onClick={()=>onDone(task)}
                     style={{background:SAGE,border:`1px solid ${SAGE_D}`,
-                      borderRadius:20,padding:"4px 12px",fontSize:10,
+                      borderRadius:20,padding:"5px 14px",fontSize:12,
                       color:"#fff",fontFamily:FONT,fontWeight:600}}>
                     ✓ done
                   </button>
@@ -354,15 +356,15 @@ function PlantTaskCard({plantName, location, tasks, onDone, onDefer, onOpenPlant
               </div>
               {wetFor===task.type&&(
                 <div style={{padding:"6px 14px 9px 46px",display:"flex",alignItems:"center",gap:7,flexWrap:"wrap",background:`${SURF}`}}>
-                  <span style={{fontSize:10,color:MUTED}}>Check back in:</span>
+                  <span style={{fontSize:12,color:MUTED}}>Check back in:</span>
                   {[1,2,3,5].map(d=>(
                     <button key={d} onClick={()=>{onDefer(task,d);setWetFor(null);}}
                       style={{background:"#fff",border:`1px solid ${BORDER}`,
-                        borderRadius:20,padding:"3px 10px",fontSize:10.5,color:SAGE_D,fontFamily:FONT,fontWeight:600}}>
+                        borderRadius:20,padding:"4px 12px",fontSize:13,color:SAGE_D,fontFamily:FONT,fontWeight:600}}>
                       {d}d
                     </button>
                   ))}
-                  <span style={{fontSize:9,color:MUTED,fontStyle:"italic"}}>updates schedule</span>
+                  <span style={{fontSize:11,color:MUTED,fontStyle:"italic"}}>updates schedule</span>
                 </div>
               )}
             </div>
@@ -1069,12 +1071,25 @@ export default function App() {
       if(def && daysSince(def) < 0){deferred.push(t);return;}
       active.push(t);
     });
+    // Stable plant order: lock positions on first build, preserve across updates within the session.
+    // This keeps a plant in place after logging one of its tasks (e.g. water logged, topdress remains).
+    if(sessionOrderRef.current===null){
+      sessionOrderRef.current=[...new Set(active.map(t=>t.plant))];
+    } else {
+      const activePlantSet=new Set(active.map(t=>t.plant));
+      const kept=sessionOrderRef.current.filter(n=>activePlantSet.has(n));
+      const added=[...new Set(active.map(t=>t.plant))].filter(n=>!kept.includes(n));
+      sessionOrderRef.current=[...kept,...added];
+    }
+    const orderIdx=new Map(sessionOrderRef.current.map((n,i)=>[n,i]));
+    active.sort((a,b)=>(orderIdx.get(a.plant)??999)-(orderIdx.get(b.plant)??999));
     setTasks(active); setDoneTasks(done); setDeferred(deferred);
   },[plants]);
 
   // ── Auto-save whenever plants changes ─────────────────────────────────────
   // This is the canonical React pattern: derive saves from state, not from event handlers.
   // The isFirstLoad ref prevents saving the initial load back over itself.
+  const sessionOrderRef = useRef(null); // stable plant order for today's session
   const isFirstLoad = useRef(true);
   useEffect(()=>{
     if(!plants) return;
@@ -1279,11 +1294,11 @@ export default function App() {
     const showLocHeaders = sortedLocs.length > 1;
     return (
       <section style={{marginBottom:20}}>
-        <div style={{fontSize:10,color,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>{label} · {groups.length} plant{groups.length!==1?"s":""}</div>
+        <div style={{fontSize:12,color,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>{label} · {groups.length} plant{groups.length!==1?"s":""}</div>
         {sortedLocs.map(loc => (
           <div key={loc||"__none__"} style={{marginBottom: showLocHeaders ? 10 : 0}}>
             {showLocHeaders && (
-              <div style={{fontSize:9.5,color:MUTED,marginBottom:6,paddingLeft:2,fontStyle:"italic",letterSpacing:0.3}}>
+              <div style={{fontSize:11,color:MUTED,marginBottom:6,paddingLeft:2,fontStyle:"italic",letterSpacing:0.3}}>
                 {loc ? `📍 ${loc}` : "No location set"}
               </div>
             )}
@@ -1337,17 +1352,17 @@ export default function App() {
             </div>
           </div>
           <div style={{display:"flex",gap:5,flexWrap:"wrap",justifyContent:"flex-end",marginTop:2}}>
-            {overdueCt>0  && <span style={{background:`${TERRA}18`,color:TERRA,border:`1px solid ${TERRA}50`,borderRadius:20,padding:"3px 10px",fontSize:10,fontWeight:700}}>{overdueCt} overdue</span>}
-            {dueCt>0      && <span style={{background:`${CLAY}22`,color:TERRA,border:`1px solid ${CLAY}60`,borderRadius:20,padding:"3px 10px",fontSize:10,fontWeight:700}}>{dueCt} due today</span>}
-            {doneTasks.length>0 && <span style={{background:`${SAGE}15`,color:SAGE_D,border:`1px solid ${SAGE}40`,borderRadius:20,padding:"3px 10px",fontSize:10,fontWeight:700}}>{doneTasks.length} done ✓</span>}
-            {overdueCt===0&&dueCt===0&&doneTasks.length===0 && <span style={{background:`${SAGE}12`,color:SAGE_D,border:`1px solid ${SAGE}30`,borderRadius:20,padding:"3px 10px",fontSize:10,fontWeight:600}}>all clear ✓</span>}
+            {overdueCt>0  && <span style={{background:`${TERRA}18`,color:TERRA,border:`1px solid ${TERRA}50`,borderRadius:20,padding:"4px 11px",fontSize:12,fontWeight:700}}>{overdueCt} overdue</span>}
+            {dueCt>0      && <span style={{background:`${CLAY}22`,color:TERRA,border:`1px solid ${CLAY}60`,borderRadius:20,padding:"4px 11px",fontSize:12,fontWeight:700}}>{dueCt} due today</span>}
+            {doneTasks.length>0 && <span style={{background:`${SAGE}15`,color:SAGE_D,border:`1px solid ${SAGE}40`,borderRadius:20,padding:"4px 11px",fontSize:12,fontWeight:700}}>{doneTasks.length} done ✓</span>}
+            {overdueCt===0&&dueCt===0&&doneTasks.length===0 && <span style={{background:`${SAGE}12`,color:SAGE_D,border:`1px solid ${SAGE}30`,borderRadius:20,padding:"4px 11px",fontSize:12,fontWeight:600}}>all clear ✓</span>}
           </div>
         </div>
         <div style={{display:"flex",gap:5,alignItems:"center",justifyContent:"space-between"}}>
           <div style={{display:"flex",gap:5}}>
             {[["today","Today"],["all","All Plants"]].map(([v,l])=>(
               <button key={v} onClick={()=>setView(v)} style={{
-                padding:"6px 15px",borderRadius:20,fontSize:12,
+                padding:"7px 16px",borderRadius:20,fontSize:14,
                 background:view===v?"rgba(196,137,90,0.2)":"transparent",
                 color:view===v?"#fff":MUTED,
                 border:`1px solid ${view===v?"rgba(196,137,90,0.38)":BORDER}`,
@@ -1405,14 +1420,14 @@ export default function App() {
             <PlantSection color="#a09070" label="Coming Up"      taskList={tasks.filter(t=>!t.due&&!t.overdue&&t.upcoming&&t.daysUntilDue!==1)} />
             {doneTasks.length>0&&(
               <section style={{marginBottom:20}}>
-                <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>Done Today ✓</div>
+                <div style={{fontSize:12,color:MUTED,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>Done Today ✓</div>
                 <div style={{display:"flex",flexDirection:"column",gap:5}}>
                   {groupByPlant(doneTasks).map(({name,tasks:grp})=>(
                     <div key={name} style={{background:CARD,border:`1px solid ${SAGE}25`,borderLeft:`3px solid ${SAGE}60`,borderRadius:11,padding:"9px 14px",opacity:0.7,boxShadow:"0 1px 4px rgba(61,53,48,0.05)"}}>
-                      <div style={{fontSize:13,color:INK,fontWeight:600,marginBottom:4,fontFamily:SERIF}}>{name}</div>
+                      <div style={{fontSize:15,color:INK,fontWeight:600,marginBottom:4,fontFamily:SERIF}}>{name}</div>
                       <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
                         {grp.map(t=>(
-                          <span key={t.type} style={{fontSize:10.5,color:SAGE_D,background:`${SAGE}15`,borderRadius:20,padding:"2px 9px"}}>
+                          <span key={t.type} style={{fontSize:12,color:SAGE_D,background:`${SAGE}15`,borderRadius:20,padding:"3px 10px"}}>
                             {CARE[t.type]?.icon} {CARE[t.type]?.label} ✓
                           </span>
                         ))}
@@ -1424,19 +1439,19 @@ export default function App() {
             )}
             {deferredTasks.length>0&&(
               <section style={{marginBottom:20}}>
-                <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>Deferred</div>
+                <div style={{fontSize:12,color:MUTED,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>Deferred</div>
                 <div style={{display:"flex",flexDirection:"column",gap:5}}>
                   {groupByPlant(deferredTasks).map(({name,tasks:grp})=>(
                     <div key={name} style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:11,padding:"9px 14px",boxShadow:"0 1px 4px rgba(61,53,48,0.05)"}}>
-                      <div style={{fontSize:13,color:INK,fontWeight:600,marginBottom:5,fontFamily:SERIF}}>{name}</div>
+                      <div style={{fontSize:15,color:INK,fontWeight:600,marginBottom:5,fontFamily:SERIF}}>{name}</div>
                       <div style={{display:"flex",flexDirection:"column",gap:4}}>
                         {grp.map(t=>{
                           const def=plants[t.plant]?.deferred?.[t.type];
                           return (
                             <div key={t.type} style={{display:"flex",alignItems:"center",gap:8}}>
-                              <span style={{fontSize:13}}>{CARE[t.type]?.icon}</span>
-                              <span style={{fontSize:11,color:MUTED,flex:1}}>{CARE[t.type]?.label} · back {fmtDate(def)}</span>
-                              <button onClick={()=>setLogModal({plant:t.plant,type:t.type})} style={{background:`${TERRA}15`,border:`1px solid ${TERRA}40`,borderRadius:20,padding:"3px 9px",fontSize:10,color:TERRA,fontFamily:FONT,fontWeight:600}}>do it now</button>
+                              <span style={{fontSize:15}}>{CARE[t.type]?.icon}</span>
+                              <span style={{fontSize:13,color:MUTED,flex:1}}>{CARE[t.type]?.label} · back {fmtDate(def)}</span>
+                              <button onClick={()=>setLogModal({plant:t.plant,type:t.type})} style={{background:`${TERRA}15`,border:`1px solid ${TERRA}40`,borderRadius:20,padding:"4px 11px",fontSize:12,color:TERRA,fontFamily:FONT,fontWeight:600}}>do it now</button>
                             </div>
                           );
                         })}

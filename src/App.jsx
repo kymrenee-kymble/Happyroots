@@ -735,6 +735,25 @@ const GDRIVE_FILE      = "happyroots-data.json";
 let _gapiReady = false;
 let _tokenClient = null;
 let _accessToken = null;
+let _refreshTimer = null;
+
+// Called every time a token is received (initial auth or silent refresh).
+// Schedules a silent re-auth 5 min before the token expires so sessions
+// lasting several hours never hit the 1-hour hard expiry mid-save.
+function _handleToken(resp, resolve, reject) {
+  if (resp.error) { if (reject) reject(resp); return; }
+  _accessToken = resp.access_token;
+  try { localStorage.setItem("hr-drive-authed", "1"); } catch {}
+  if (_refreshTimer) clearTimeout(_refreshTimer);
+  const refreshIn = Math.max(30, (resp.expires_in || 3600) - 300); // 5 min early
+  _refreshTimer = setTimeout(() => {
+    if (!_tokenClient) return;
+    console.log("🔄 Proactively refreshing Drive token…");
+    _tokenClient.callback = r => _handleToken(r, null, null);
+    _tokenClient.requestAccessToken({ prompt: "" }); // silent — no popup
+  }, refreshIn * 1000);
+  if (resolve) resolve(_accessToken);
+}
 
 function loadGapiScript() {
   return new Promise(resolve => {
@@ -772,24 +791,10 @@ async function getAccessToken(forcePrompt = false) {
       _tokenClient = window.google.accounts.oauth2.initTokenClient({
         client_id: GDRIVE_CLIENT_ID,
         scope: GDRIVE_SCOPE,
-        callback: (resp) => {
-          if (resp.error) { reject(resp); return; }
-          _accessToken = resp.access_token;
-          // Remember that this user has authed so we try silently next time
-          try { localStorage.setItem("hr-drive-authed", "1"); } catch {}
-          setTimeout(() => { _accessToken = null; }, (resp.expires_in - 60) * 1000);
-          resolve(_accessToken);
-        },
+        callback: resp => _handleToken(resp, resolve, reject),
       });
     } else {
-      // Reuse existing client, just update callback
-      _tokenClient.callback = (resp) => {
-        if (resp.error) { reject(resp); return; }
-        _accessToken = resp.access_token;
-        try { localStorage.setItem("hr-drive-authed", "1"); } catch {}
-        setTimeout(() => { _accessToken = null; }, (resp.expires_in - 60) * 1000);
-        resolve(_accessToken);
-      };
+      _tokenClient.callback = resp => _handleToken(resp, resolve, reject);
     }
     // Use empty prompt for silent re-auth if previously authed, otherwise show picker
     const prompt = forcePrompt ? "consent" : "";

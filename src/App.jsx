@@ -221,9 +221,11 @@ function buildTasks(plants) {
     }
     // ── Topdress ─────────────────────────────────────────────────────────────
     // Topdress is always done alongside a watering session, never independently.
-    // Only generate the task when water is due — it disappears automatically after
-    // the user waters (waterDue becomes false), so it never accumulates as overdue.
-    if (waterDue) {
+    // Only generate when water is due AND no water/flush deferral is currently active
+    // (if water is deferred, topdress waits too — they're always done together).
+    const waterSessionDeferred = (p.deferred?.water && daysSince(p.deferred.water) < 0) ||
+                                  (p.deferred?.flush && daysSince(p.deferred.flush) < 0);
+    if (waterDue && !waterSessionDeferred) {
       const tdThreshold = effectiveInterval(p, "topdress");
       const tdLast = lastLogOf(p, "topdress");
       const tdBaseline = tdLast || p.addedDate || null;
@@ -1243,9 +1245,10 @@ export default function App() {
     </div>
   );
 
-  const overdueCt=tasks.filter(t=>t.overdue).length;
-  const dueCt=tasks.filter(t=>t.due&&!t.overdue).length;
-  const upcomingCt=tasks.filter(t=>t.upcoming||t.neverLogged).length;
+  const overduePlants=new Set(tasks.filter(t=>t.overdue).map(t=>t.plant));
+  const overdueCt=overduePlants.size;
+  const dueCt=new Set(tasks.filter(t=>t.due&&!t.overdue&&!overduePlants.has(t.plant)).map(t=>t.plant)).size;
+  const upcomingCt=new Set(tasks.filter(t=>!t.due&&!t.overdue&&t.upcoming).map(t=>t.plant)).size;
   const allLocations=[...new Set(Object.values(plants).map(p=>p.location).filter(Boolean))].sort();
 
   // Group flat task list by plant name, preserving sort order of first occurrence

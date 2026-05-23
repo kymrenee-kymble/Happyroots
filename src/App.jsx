@@ -738,22 +738,31 @@ let _accessToken = null;
 let _refreshTimer = null;
 let _tokenExpired = false;
 
-// Called every time a token is received. Schedules a silent expiry clear
-// (no popup — just marks the token gone so saves fail gracefully).
+// Called every time a token is received (initial auth or silent refresh).
+// Schedules a proactive re-auth 5 min before the token hard-expires so
+// saves never fail mid-session. If the refresh popup is dismissed or fails,
+// the token clears silently and saves fall back to local-only.
 function _handleToken(resp, resolve, reject) {
   if (resp.error) { if (reject) reject(resp); return; }
   _accessToken = resp.access_token;
   _tokenExpired = false;
   try { localStorage.setItem("hr-drive-authed", "1"); } catch {}
   if (_refreshTimer) clearTimeout(_refreshTimer);
-  // Clear token 60s before hard expiry — no popup, saves will fail gracefully
-  // until user manually reconnects via the Drive button.
-  const clearIn = Math.max(30, (resp.expires_in || 3600) - 60);
+  const refreshIn = Math.max(30, (resp.expires_in || 3600) - 300); // 5 min early
   _refreshTimer = setTimeout(() => {
+    if (!_tokenClient) return;
+    console.log("🔄 Proactively refreshing Drive token…");
+    _tokenClient.callback = r => _handleToken(r, null, null);
+    _tokenClient.requestAccessToken({ prompt: "" });
+  }, refreshIn * 1000);
+  // Safety: also clear token at hard expiry so saves fail gracefully
+  // if the proactive refresh above is dismissed or blocked.
+  setTimeout(() => {
+    if (_tokenExpired) return; // already refreshed
     _accessToken = null;
     _tokenExpired = true;
-    console.log("Drive token expired — saves paused until reconnect");
-  }, clearIn * 1000);
+    console.log("Drive token hard-expired — saves paused");
+  }, Math.max(0, (resp.expires_in || 3600)) * 1000);
   if (resolve) resolve(_accessToken);
 }
 
@@ -1394,7 +1403,7 @@ export default function App() {
               {driveStatus==="connecting"    && <span style={{color:"#a09060",fontSize:9.5,animation:"pulse 1.4s infinite"}}>☁️ connecting…</span>}
               {driveStatus==="syncing"       && <span style={{color:"#a09060",fontSize:9.5,animation:"pulse 1.4s infinite"}}>☁️ saving…</span>}
               {driveStatus==="saved"         && <span style={{color:"#8abd80",fontSize:9.5}}>☁️ Drive synced</span>}
-              {driveStatus==="error"         && <button onClick={connectDrive} style={{fontSize:10,color:"#fff",background:"#c06040",border:"none",borderRadius:10,padding:"3px 12px",fontFamily:FONT,cursor:"pointer",fontWeight:600}} title="Data saved locally — tap to reconnect Drive">⚠️ Reconnect</button>}
+              {driveStatus==="error"         && <span style={{color:"#e07050",fontSize:9.5}} title="Drive error — data saved locally">⚠️ local only</span>}
               {(driveStatus==="disconnected"||driveStatus==="idle") && !driveAuthed && (
                 <button onClick={connectDrive} style={{fontSize:10,color:"#fff",background:TERRA,border:"none",borderRadius:10,padding:"3px 12px",fontFamily:FONT,cursor:"pointer",fontWeight:600}}>
                   ☁️ Connect Drive

@@ -736,22 +736,24 @@ let _gapiReady = false;
 let _tokenClient = null;
 let _accessToken = null;
 let _refreshTimer = null;
+let _tokenExpired = false;
 
-// Called every time a token is received (initial auth or silent refresh).
-// Schedules a silent re-auth 5 min before the token expires so sessions
-// lasting several hours never hit the 1-hour hard expiry mid-save.
+// Called every time a token is received. Schedules a silent expiry clear
+// (no popup — just marks the token gone so saves fail gracefully).
 function _handleToken(resp, resolve, reject) {
   if (resp.error) { if (reject) reject(resp); return; }
   _accessToken = resp.access_token;
+  _tokenExpired = false;
   try { localStorage.setItem("hr-drive-authed", "1"); } catch {}
   if (_refreshTimer) clearTimeout(_refreshTimer);
-  const refreshIn = Math.max(30, (resp.expires_in || 3600) - 300); // 5 min early
+  // Clear token 60s before hard expiry — no popup, saves will fail gracefully
+  // until user manually reconnects via the Drive button.
+  const clearIn = Math.max(30, (resp.expires_in || 3600) - 60);
   _refreshTimer = setTimeout(() => {
-    if (!_tokenClient) return;
-    console.log("🔄 Proactively refreshing Drive token…");
-    _tokenClient.callback = r => _handleToken(r, null, null);
-    _tokenClient.requestAccessToken({ prompt: "" }); // silent — no popup
-  }, refreshIn * 1000);
+    _accessToken = null;
+    _tokenExpired = true;
+    console.log("Drive token expired — saves paused until reconnect");
+  }, clearIn * 1000);
   if (resolve) resolve(_accessToken);
 }
 
@@ -785,6 +787,9 @@ async function initGapi() {
 
 async function getAccessToken(forcePrompt = false) {
   if (_accessToken && !forcePrompt) return _accessToken;
+  // Token expired mid-session — fail silently instead of showing a popup.
+  // The user can reconnect manually via the Drive button.
+  if (_tokenExpired && !forcePrompt) throw new Error("token_expired");
   await loadGisScript();
   return new Promise((resolve, reject) => {
     if (!_tokenClient) {
@@ -796,7 +801,6 @@ async function getAccessToken(forcePrompt = false) {
     } else {
       _tokenClient.callback = resp => _handleToken(resp, resolve, reject);
     }
-    // Use empty prompt for silent re-auth if previously authed, otherwise show picker
     const prompt = forcePrompt ? "consent" : "";
     _tokenClient.requestAccessToken({ prompt });
   });
@@ -853,6 +857,14 @@ async function driveWriteFile(payload) {
       body: form,
     });
   }
+}
+
+function readLocalSavedAt() {
+  try {
+    const raw = localStorage.getItem("hoya-plants-stable");
+    if (raw) return JSON.parse(raw)?.savedAt || null;
+  } catch {}
+  return null;
 }
 
 export default function App() {
@@ -961,14 +973,30 @@ export default function App() {
       try {
         const driveData = await driveReadFile();
         if (driveData?.plants) {
-          setPlants(migratePlants(driveData.plants));
-          if (driveData.chat) setChatMsgs(driveData.chat);
-          try { localStorage.setItem("hr-session", JSON.stringify({ plants: driveData.plants, savedAt: driveData.savedAt })); } catch {}
+          const localSavedAt = readLocalSavedAt();
+          const driveIsNewer = !localSavedAt || new Date(driveData.savedAt || 0) >= new Date(localSavedAt);
+          if (driveIsNewer) {
+            setPlants(migratePlants(driveData.plants));
+            if (driveData.chat) setChatMsgs(driveData.chat);
+            try { localStorage.setItem("hr-session", JSON.stringify({ plants: driveData.plants, savedAt: driveData.savedAt })); } catch {}
+            console.log("✓ Drive loaded " + Object.keys(driveData.plants).length + " plants (Drive is newer)");
+            showToast("☁️ Loaded from Google Drive");
+          } else {
+            // Local has newer data (Drive saves failed while token was expired)
+            // Keep local plants (already loaded), push them to Drive so it catches up.
+            console.log("Local is newer than Drive — keeping local, pushing to Drive");
+            const localPlants = readLocal();
+            try {
+              await driveWriteFile({ plants: localPlants, chat: (localChat||[]).slice(-40), savedAt: localSavedAt });
+              console.log("✓ Pushed local to Drive");
+            } catch(e2) {
+              console.log("✗ Push to Drive failed: " + e2);
+            }
+            showToast("☁️ Drive connected — synced latest data");
+          }
           setDriveAuthed(true); driveAuthedRef.current = true;
           try { localStorage.setItem("hr-drive-authed","1"); } catch {}
           setDriveStatus("saved");
-          console.log("✓ Drive loaded " + Object.keys(driveData.plants).length + " plants");
-          showToast("☁️ Loaded from Google Drive");
         } else {
           setDriveAuthed(true); driveAuthedRef.current = true;
           setDriveStatus("idle");
@@ -998,13 +1026,31 @@ export default function App() {
       console.log("loading from Drive...");
       const driveData = await driveReadFile();
       if (driveData?.plants) {
-        const count = Object.keys(driveData.plants).length;
-        console.log("✓ loaded " + count + " plants from Drive");
-        setPlants(migratePlants(driveData.plants));
-        if (driveData.chat) setChatMsgs(driveData.chat);
-        try { localStorage.setItem("hr-session", JSON.stringify({ plants: driveData.plants, savedAt: driveData.savedAt })); } catch {}
-        setDriveStatus("saved");
-        showToast("☁️ Loaded " + count + " plants from Drive");
+        const localSavedAt = readLocalSavedAt();
+        const driveIsNewer = !localSavedAt || new Date(driveData.savedAt || 0) >= new Date(localSavedAt);
+        if (driveIsNewer) {
+          const count = Object.keys(driveData.plants).length;
+          console.log("✓ loaded " + count + " plants from Drive (Drive is newer)");
+          setPlants(migratePlants(driveData.plants));
+          if (driveData.chat) setChatMsgs(driveData.chat);
+          try { localStorage.setItem("hr-session", JSON.stringify({ plants: driveData.plants, savedAt: driveData.savedAt })); } catch {}
+          setDriveStatus("saved");
+          showToast("☁️ Loaded " + count + " plants from Drive");
+        } else {
+          // Local is newer — keep local, push to Drive so it catches up
+          console.log("Local is newer than Drive — keeping local, pushing to Drive");
+          const localPlants = readLocal();
+          try {
+            await driveWriteFile({ plants: localPlants, chat: [], savedAt: localSavedAt });
+            console.log("✓ Pushed local to Drive");
+            setDriveStatus("saved");
+            showToast("☁️ Drive connected — synced your latest data");
+          } catch(e2) {
+            console.log("✗ Push to Drive failed: " + e2);
+            setDriveStatus("error");
+            showToast("⚠️ Drive connected but sync failed");
+          }
+        }
       } else {
         console.log("no Drive file yet — will create on first save");
         setDriveStatus("saved");
@@ -1348,7 +1394,7 @@ export default function App() {
               {driveStatus==="connecting"    && <span style={{color:"#a09060",fontSize:9.5,animation:"pulse 1.4s infinite"}}>☁️ connecting…</span>}
               {driveStatus==="syncing"       && <span style={{color:"#a09060",fontSize:9.5,animation:"pulse 1.4s infinite"}}>☁️ saving…</span>}
               {driveStatus==="saved"         && <span style={{color:"#8abd80",fontSize:9.5}}>☁️ Drive synced</span>}
-              {driveStatus==="error"         && <span style={{color:"#e07050",fontSize:9.5}} title="Drive error — data saved locally">⚠️ local only</span>}
+              {driveStatus==="error"         && <button onClick={connectDrive} style={{fontSize:10,color:"#fff",background:"#c06040",border:"none",borderRadius:10,padding:"3px 12px",fontFamily:FONT,cursor:"pointer",fontWeight:600}} title="Data saved locally — tap to reconnect Drive">⚠️ Reconnect</button>}
               {(driveStatus==="disconnected"||driveStatus==="idle") && !driveAuthed && (
                 <button onClick={connectDrive} style={{fontSize:10,color:"#fff",background:TERRA,border:"none",borderRadius:10,padding:"3px 12px",fontFamily:FONT,cursor:"pointer",fontWeight:600}}>
                   ☁️ Connect Drive

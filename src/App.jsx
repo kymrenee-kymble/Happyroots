@@ -736,16 +736,12 @@ let _gapiReady = false;
 let _tokenClient = null;
 let _accessToken = null;
 let _refreshTimer = null;
-let _tokenExpired = false;
 
-// Called every time a token is received (initial auth or silent refresh).
-// Schedules a proactive re-auth 5 min before the token hard-expires so
-// saves never fail mid-session. If the refresh popup is dismissed or fails,
-// the token clears silently and saves fall back to local-only.
+// Called every time a token is received (initial auth or proactive refresh).
+// Schedules a proactive re-auth 5 min before expiry so saves never fail.
 function _handleToken(resp, resolve, reject) {
   if (resp.error) { if (reject) reject(resp); return; }
   _accessToken = resp.access_token;
-  _tokenExpired = false;
   try { localStorage.setItem("hr-drive-authed", "1"); } catch {}
   if (_refreshTimer) clearTimeout(_refreshTimer);
   const refreshIn = Math.max(30, (resp.expires_in || 3600) - 300); // 5 min early
@@ -755,14 +751,6 @@ function _handleToken(resp, resolve, reject) {
     _tokenClient.callback = r => _handleToken(r, null, null);
     _tokenClient.requestAccessToken({ prompt: "" });
   }, refreshIn * 1000);
-  // Safety: also clear token at hard expiry so saves fail gracefully
-  // if the proactive refresh above is dismissed or blocked.
-  setTimeout(() => {
-    if (_tokenExpired) return; // already refreshed
-    _accessToken = null;
-    _tokenExpired = true;
-    console.log("Drive token hard-expired — saves paused");
-  }, Math.max(0, (resp.expires_in || 3600)) * 1000);
   if (resolve) resolve(_accessToken);
 }
 
@@ -796,9 +784,6 @@ async function initGapi() {
 
 async function getAccessToken(forcePrompt = false) {
   if (_accessToken && !forcePrompt) return _accessToken;
-  // Token expired mid-session — fail silently instead of showing a popup.
-  // The user can reconnect manually via the Drive button.
-  if (_tokenExpired && !forcePrompt) throw new Error("token_expired");
   await loadGisScript();
   return new Promise((resolve, reject) => {
     if (!_tokenClient) {
@@ -910,7 +895,10 @@ export default function App() {
   const LEGACY_CHAT = ["hoya-v5-chat","hoya-v4-chat","hoya-v3-chat"];
 
   function readLocal() {
-    const allKeys = ["hr-session","hoya-plants-stable","hoya-v5","hoya-v4","hoya-v3"];
+    // hoya-plants-stable is checked first — it's written by persist() and always
+    // has the user's most recent saves. hr-session holds stale Drive data from
+    // the last startup load and must NOT take precedence over local saves.
+    const allKeys = ["hoya-plants-stable","hr-session","hoya-v5","hoya-v4","hoya-v3"];
     for (const k of allKeys) {
       try {
         const raw = localStorage.getItem(k);

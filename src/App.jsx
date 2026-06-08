@@ -181,9 +181,10 @@ function buildTasks(plants) {
     const waterAge  = daysSince(lastWaterSession);
     const flushAge  = daysSince(flushLast); // days since last flush specifically
 
+    const now3 = new Date();
     const sessionLoggedToday = lastWaterSession && new Date(lastWaterSession).toDateString() === today;
-    const waterDeferred = p.deferred?.["water"] && new Date(p.deferred["water"]) > new Date() && new Date(p.deferred["water"]).toDateString() !== today;
-    const flushDeferred = p.deferred?.["flush"] && new Date(p.deferred["flush"]) > new Date() && new Date(p.deferred["flush"]).toDateString() !== today;
+    const waterDeferred = p.deferred?.["water"] && new Date(p.deferred["water"]) > now3;
+    const flushDeferred = p.deferred?.["flush"] && new Date(p.deferred["flush"]) > now3;
 
     // Is a watering session due?
     const waterDue    = waterAge !== null && waterAge >= waterThreshold;
@@ -1080,7 +1081,7 @@ export default function App() {
         showToast("⚠️ Drive save failed — data saved locally. Tap Reconnect Drive");
       }
     }, 2000);
-  }, [showToast]);
+  }, []);
 
   useEffect(()=>{
     if(!plants) return;
@@ -1089,11 +1090,19 @@ export default function App() {
     const active=[],done=[],deferred=[];
     all.forEach(t=>{
       const p=plants[t.plant];
-      const last=lastLogOf(p,t.type);
-      const lastDate = last ? new Date(last) : null;
       const now = new Date();
+      // Check deferred flag first (covers water+flush which share a session)
+      const defTypes = (t.type==="water"||t.type==="flush") ? ["water","flush"] : [t.type];
+      const isDeferred = defTypes.some(dt => {
+        const d = p.deferred?.[dt];
+        return d && new Date(d) > now;
+      });
+      if (isDeferred) { deferred.push(t); return; }
+      // Check if logged today
+      const last = lastLogOf(p, t.type==="flush" ? null : t.type) ||
+                   (t.type==="water"||t.type==="flush" ? (lastLogOf(p,"water")||lastLogOf(p,"flush")) : null);
+      const lastDate = last ? new Date(last) : null;
       if(last && lastDate.toDateString()===today){done.push(t);return;}
-      if(last && lastDate > now){deferred.push(t);return;}
       active.push(t);
     });
     setTasks(active); setDoneTasks(done); setDeferred(deferred);
@@ -1152,21 +1161,26 @@ export default function App() {
   }
 
   function deferTask(task, days=1) {
+    const until = new Date();
+    until.setDate(until.getDate() + days);
+    const untilStr = until.toISOString();
     setPlants(prev => {
       const p = prev[task.plant];
       const logs = [...(p.logs||[])];
-      const lastIdx = logs.map(l=>l.type).lastIndexOf(task.type);
+      // Stamp wetDays on last relevant log for learning
+      const searchTypes = (task.type === "water" || task.type === "flush")
+        ? ["water","flush"] : [task.type];
+      let lastIdx = -1;
+      logs.forEach((l,i) => { if (searchTypes.includes(l.type)) lastIdx = i; });
       if (lastIdx !== -1) {
-        const lastLog = logs[lastIdx];
-        const newDate = new Date(lastLog.date);
-        newDate.setDate(newDate.getDate() + days);
-        logs[lastIdx] = { ...lastLog, date: newDate.toISOString(), wetDays: (lastLog.wetDays||0)+days };
-      } else {
-        const futureDate = new Date();
-        futureDate.setDate(futureDate.getDate() + days);
-        logs.push({ type: task.type, date: futureDate.toISOString(), note: "still wet", wetDays: days, synthetic: true });
+        logs[lastIdx] = { ...logs[lastIdx], wetDays: (logs[lastIdx].wetDays||0)+days };
       }
-      return { ...prev, [task.plant]: { ...p, logs } };
+      // Use deferred flag — simple and reliable
+      const newDeferred = { ...(p.deferred||{}), [task.type]: untilStr };
+      // Water and flush share a session — defer both together
+      if (task.type === "water") newDeferred["flush"] = untilStr;
+      if (task.type === "flush") newDeferred["water"] = untilStr;
+      return { ...prev, [task.plant]: { ...p, logs, deferred: newDeferred } };
     });
     showToast(`${task.plant} — checking back in ${days} day${days>1?"s":""} · schedule updated`);
   }

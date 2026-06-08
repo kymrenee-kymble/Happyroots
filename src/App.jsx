@@ -208,18 +208,20 @@ function buildTasks(plants) {
       }
     }
 
-    // ── All other scheduled types (topdress, foliar) — unchanged logic ───────
+    // ── All other scheduled types (topdress) ─────────────────────────────────
     ["topdress"].forEach(type => {
       const threshold = effectiveInterval(p, type);
       const last = lastLogOf(p, type);
       const age  = daysSince(last);
       if (last && new Date(last).toDateString()===today) return;
       const def = p.deferred?.[type];
-      if (def && new Date(def) > new Date() && new Date(def).toDateString()!==today) return;
+      if (def && new Date(def) > new Date()) return;
       const overdue  = age!==null && age>threshold;
       const due      = age!==null && age>=threshold;
       const upcoming = !due && age!==null && age>=threshold*0.75;
-      const neverLogged = age===null;
+      // Only show never-logged if plant has been in collection 30+ days
+      const daysSinceAdded = p.addedDate ? daysSince(p.addedDate) : 0;
+      const neverLogged = age===null && daysSinceAdded >= threshold;
       if (overdue||due||upcoming||neverLogged)
         tasks.push({ id:`${name}::${type}`, plant:name, type, age, threshold, last, overdue, due, upcoming, neverLogged });
     });
@@ -369,6 +371,13 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
   const [locDraft,setLocDraft]=useState(plant.location||"");
   const [editingName,setEditingName]=useState(false);
   const [nameDraft,setNameDraft]=useState(name);
+  // Pot & Soil local state — controlled inputs with single Save button
+  const [localPotSize,setLocalPotSize]       = useState(plant.potSize||"");
+  const [localPotMaterial,setLocalPotMaterial] = useState(plant.potMaterial||"");
+  const [localSoilPreset,setLocalSoilPreset] = useState(plant.soilPreset||"");
+  const [localSoilNotes,setLocalSoilNotes]   = useState(plant.soilNotes||"");
+  const [potSoilDirty,setPotSoilDirty]       = useState(false);
+  const [savedPot,setSavedPot]               = useState(false);
   const locRef=useRef(null);
   const nameRef=useRef(null);
   const logs=[...(plant.logs||[])].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,8);
@@ -393,7 +402,7 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
   });
 
   return (
-    <div style={{position:"fixed",inset:0,background:"rgba(61,53,48,0.35)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center",backdropFilter:"blur(8px)"}} onClick={onClose}>
+    <div style={{position:"fixed",inset:0,background:"rgba(61,53,48,0.35)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center",backdropFilter:"blur(8px)"}} onClick={()=>{ if(potSoilDirty && !window.confirm("You have unsaved Pot & Soil changes. Close anyway?")) return; onClose(); }}>
       <div onClick={e=>e.stopPropagation()} style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"20px 20px 0 0",padding:22,width:"100%",maxWidth:520,maxHeight:"84vh",overflowY:"auto",boxShadow:"0 -4px 40px rgba(61,53,48,0.12)"}}>
         {/* Header */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
@@ -441,7 +450,10 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
               )}
             </div>
           </div>
-          <button onClick={onClose} style={{background:"none",border:"none",color:MUTED,fontSize:22,cursor:"pointer",lineHeight:1,flexShrink:0,padding:"0 4px"}}>×</button>
+          <button onClick={()=>{
+            if(potSoilDirty && !window.confirm("You have unsaved Pot & Soil changes. Close anyway?")) return;
+            onClose();
+          }} style={{background:"none",border:"none",color:MUTED,fontSize:22,cursor:"pointer",lineHeight:1,flexShrink:0,padding:"0 4px"}}>×</button>
         </div>
 
         {/* Photo section */}
@@ -518,15 +530,27 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
           </div>
         </div>
 
-        {/* Pot & Soil metadata */}
+        {/* Pot & Soil metadata — local state, single Save button */}
         <div style={{marginBottom:20}}>
-          <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:1.8,marginBottom:9,fontWeight:600,fontFamily:SERIF,fontStyle:"italic"}}>Pot & Soil</div>
+          <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:1.8,marginBottom:9,fontWeight:600,fontFamily:SERIF,fontStyle:"italic",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <span>Pot & Soil</span>
+            {potSoilDirty&&(
+              <button onClick={()=>{
+                onLog(name,"__meta__",{potSize:localPotSize,potMaterial:localPotMaterial,soilPreset:localSoilPreset,soilNotes:localSoilNotes});
+                setPotSoilDirty(false);
+                setSavedPot(true); setTimeout(()=>setSavedPot(false),1500);
+              }} style={{background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:20,padding:"3px 14px",fontSize:10,color:"#fff",fontFamily:FONT,fontWeight:600,cursor:"pointer"}}>
+                Save
+              </button>
+            )}
+            {savedPot&&!potSoilDirty&&<span style={{fontSize:10,color:SAGE_D}}>✓ Saved</span>}
+          </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
             <div>
               <div style={{fontSize:9.5,color:MUTED,marginBottom:4}}>Pot size</div>
-              <select defaultValue={plant.potSize||""}
-                onChange={e=>onLog(name,"__meta__",{potSize:e.target.value})}
-                style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:7,padding:"6px 9px",color:plant.potSize?INK:MUTED,fontFamily:FONT,fontSize:12,appearance:"none"}}>
+              <select value={localPotSize}
+                onChange={e=>{setLocalPotSize(e.target.value);setPotSoilDirty(true);}}
+                style={{width:"100%",background:SURF,border:`1px solid ${potSoilDirty?CLAY:BORDER}`,borderRadius:7,padding:"6px 9px",color:localPotSize?INK:MUTED,fontFamily:FONT,fontSize:12,appearance:"none"}}>
                 <option value="">— select —</option>
                 <optgroup label="Small">
                   <option value="1oz">1 oz</option>
@@ -545,9 +569,9 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
             </div>
             <div>
               <div style={{fontSize:9.5,color:MUTED,marginBottom:4}}>Pot material</div>
-              <select defaultValue={plant.potMaterial||""}
-                onChange={e=>onLog(name,"__meta__",{potMaterial:e.target.value})}
-                style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:7,padding:"6px 9px",color:plant.potMaterial?INK:MUTED,fontFamily:FONT,fontSize:12,appearance:"none"}}>
+              <select value={localPotMaterial}
+                onChange={e=>{setLocalPotMaterial(e.target.value);setPotSoilDirty(true);}}
+                style={{width:"100%",background:SURF,border:`1px solid ${potSoilDirty?CLAY:BORDER}`,borderRadius:7,padding:"6px 9px",color:localPotMaterial?INK:MUTED,fontFamily:FONT,fontSize:12,appearance:"none"}}>
                 <option value="">— select —</option>
                 <option value="plastic">Plastic / nursery pot</option>
                 <option value="terracotta">Terracotta</option>
@@ -557,24 +581,25 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
           <div style={{marginBottom:8}}>
             <div style={{fontSize:9.5,color:MUTED,marginBottom:5}}>Soil mix</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:7}}>
-              {["Chunky Aroid","Medium Aroid","Coir + Perlite","Tree Fern Fiber","Cactus Mix","Semi-hydro","Perlite","Fluval","Self-Watering"].map(p=>(
-                <button key={p} onClick={()=>onLog(name,"__meta__",{soilPreset:p})}
+              {["Chunky Aroid","Medium Aroid","Coir + Perlite","Tree Fern Fiber","Cactus Mix","Semi-hydro","Perlite","Fluval","Self-Watering"].map(preset=>(
+                <button key={preset} onClick={()=>{setLocalSoilPreset(preset);setPotSoilDirty(true);}}
                   style={{padding:"4px 12px",borderRadius:20,fontSize:11,fontFamily:FONT,cursor:"pointer",
-                    background:plant.soilPreset===p?SAGE:SURF,
-                    border:`1px solid ${plant.soilPreset===p?SAGE_D:BORDER}`,
-                    color:plant.soilPreset===p?"#fff":MUTED}}>
-                  {p}
+                    background:localSoilPreset===preset?SAGE:SURF,
+                    border:`1px solid ${localSoilPreset===preset?SAGE_D:potSoilDirty?CLAY:BORDER}`,
+                    color:localSoilPreset===preset?"#fff":MUTED}}>
+                  {preset}
                 </button>
               ))}
             </div>
-            <input defaultValue={plant.soilNotes||""} placeholder="Optional notes — e.g. perlite heavy, added orchid bark"
-              onBlur={e=>onLog(name,"__meta__",{soilNotes:e.target.value})}
-              style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:7,padding:"6px 9px",color:INK,fontFamily:FONT,fontSize:11}}
+            <input value={localSoilNotes}
+              onChange={e=>{setLocalSoilNotes(e.target.value);setPotSoilDirty(true);}}
+              placeholder="Optional notes — e.g. perlite heavy, added orchid bark"
+              style={{width:"100%",background:SURF,border:`1px solid ${potSoilDirty?CLAY:BORDER}`,borderRadius:7,padding:"6px 9px",color:INK,fontFamily:FONT,fontSize:11}}
             />
           </div>
-          {(plant.potMaterial||plant.potSize||plant.soilPreset)&&(
+          {(localPotMaterial||localPotSize||localSoilPreset)&&(
             <div style={{fontSize:9.5,color:SAGE_D,background:`${SAGE}12`,border:`1px solid ${SAGE}30`,borderRadius:7,padding:"6px 10px"}}>
-              💡 Water interval adjusted: {plant.potMaterial==="terracotta"?"terracotta dries faster · ":""}{parseInt(plant.potSize)<=2&&plant.potSize?"tiny pot · ":parseInt(plant.potSize)>=8&&plant.potSize?"large pot holds moisture · ":""}{plant.soilPreset?plant.soilPreset+" mix":""} base interval: {effectiveInterval(plant,"water")}d
+              💡 Water interval adjusted: {localPotMaterial==="terracotta"?"terracotta dries faster · ":""}{(localPotSize==="1oz"||localPotSize==="2oz")?"tiny pot · ":parseInt(localPotSize)>=8&&localPotSize?"large pot holds moisture · ":""}{localSoilPreset?localSoilPreset+" mix":""} base interval: {effectiveInterval({...plant,potSize:localPotSize,potMaterial:localPotMaterial,soilPreset:localSoilPreset},"water")}d
             </div>
           )}
         </div>
@@ -1091,16 +1116,17 @@ export default function App() {
     all.forEach(t=>{
       const p=plants[t.plant];
       const now = new Date();
-      // Check deferred flag first (covers water+flush which share a session)
+      // Check deferred flag first
       const defTypes = (t.type==="water"||t.type==="flush") ? ["water","flush"] : [t.type];
       const isDeferred = defTypes.some(dt => {
         const d = p.deferred?.[dt];
         return d && new Date(d) > now;
       });
       if (isDeferred) { deferred.push(t); return; }
-      // Check if logged today
-      const last = lastLogOf(p, t.type==="flush" ? null : t.type) ||
-                   (t.type==="water"||t.type==="flush" ? (lastLogOf(p,"water")||lastLogOf(p,"flush")) : null);
+      // Check if logged today — use combined water+flush log for water/flush tasks
+      const last = (t.type==="water"||t.type==="flush")
+        ? [lastLogOf(p,"water"), lastLogOf(p,"flush")].filter(Boolean).sort((a,b)=>new Date(b)-new Date(a))[0]
+        : lastLogOf(p, t.type);
       const lastDate = last ? new Date(last) : null;
       if(last && lastDate.toDateString()===today){done.push(t);return;}
       active.push(t);

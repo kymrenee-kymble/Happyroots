@@ -365,30 +365,34 @@ function PlantTaskCard({plantName, tasks, onDone, onDefer, onOpenPlant}){
 
 function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,onDeleteLog,onAddPhoto,onDefer}){
   const [schedEdit,setSchedEdit]=useState({});
-  const [savedMsg,setSavedMsg]=useState("");
   const [confirmDel,setConfirmDel]=useState(false);
-  const [editingLoc,setEditingLoc]=useState(false);
-  const [locDraft,setLocDraft]=useState(plant.location||"");
-  const [editingName,setEditingName]=useState(false);
   const [nameDraft,setNameDraft]=useState(name);
-  // Pot & Soil local state — controlled inputs with single Save button
-  const [localPotSize,setLocalPotSize]       = useState(plant.potSize||"");
+  const [locDraft,setLocDraft]=useState(plant.location||"");
+  // Pot & Soil — auto-save on every change
+  const [localPotSize,setLocalPotSize]         = useState(plant.potSize||"");
   const [localPotMaterial,setLocalPotMaterial] = useState(plant.potMaterial||"");
-  const [localSoilPreset,setLocalSoilPreset] = useState(plant.soilPreset||"");
-  const [localSoilNotes,setLocalSoilNotes]   = useState(plant.soilNotes||"");
-  const [potSoilDirty,setPotSoilDirty]       = useState(false);
-  const [savedPot,setSavedPot]               = useState(false);
-  const locRef=useRef(null);
+  const [localSoilPreset,setLocalSoilPreset]   = useState(plant.soilPreset||"");
+  const [localSoilNotes,setLocalSoilNotes]     = useState(plant.soilNotes||"");
+  const [autoSaved,setAutoSaved]               = useState(false);
   const nameRef=useRef(null);
+  const locRef=useRef(null);
+  const saveTimer=useRef(null);
   const logs=[...(plant.logs||[])].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,8);
 
-  useEffect(()=>{ if(editingLoc) setTimeout(()=>locRef.current?.focus(),60); },[editingLoc]);
-  useEffect(()=>{ if(editingName) setTimeout(()=>{ nameRef.current?.focus(); nameRef.current?.select(); },60); },[editingName]);
+  const flashSaved = () => { setAutoSaved(true); clearTimeout(saveTimer.current); saveTimer.current=setTimeout(()=>setAutoSaved(false),1500); };
 
-  const submitRename = () => {
+  const saveName = () => {
     const t = nameDraft.trim();
-    if (t && t !== name) onRename(name, t);
-    setEditingName(false);
+    if (t && t !== name) { onRename(name, t); flashSaved(); }
+  };
+
+  const saveLoc = () => {
+    if (locDraft.trim() !== (plant.location||"")) { onSetLocation(name, locDraft.trim()); flashSaved(); }
+  };
+
+  const savePotSoil = (patch) => {
+    onLog(name, "__meta__", patch);
+    flashSaved();
   };
 
   const intervals = Object.entries(CARE).map(([type,c])=>{
@@ -402,57 +406,40 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
   });
 
   return (
-    <div style={{position:"fixed",inset:0,background:"rgba(61,53,48,0.35)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center",backdropFilter:"blur(8px)"}} onClick={()=>{ if(potSoilDirty && !window.confirm("You have unsaved Pot & Soil changes. Close anyway?")) return; onClose(); }}>
+    <div style={{position:"fixed",inset:0,background:"rgba(61,53,48,0.35)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center",backdropFilter:"blur(8px)"}} onClick={onClose}>
       <div onClick={e=>e.stopPropagation()} style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:"20px 20px 0 0",padding:22,width:"100%",maxWidth:520,maxHeight:"84vh",overflowY:"auto",boxShadow:"0 -4px 40px rgba(61,53,48,0.12)"}}>
         {/* Header */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
           <div style={{flex:1,minWidth:0,paddingRight:12}}>
-            {!editingName ? (
-              <div style={{display:"flex",alignItems:"center",gap:8}}>
-                <div style={{fontFamily:SERIF,fontSize:19,color:INK,lineHeight:1.2}}>{name}</div>
-                <button onClick={()=>{setNameDraft(name);setEditingName(true);}} style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:20,padding:"2px 9px",fontSize:10,color:MUTED,fontFamily:FONT,flexShrink:0}}>rename</button>
-              </div>
-            ) : (
-              <div style={{display:"flex",gap:7,alignItems:"center"}}>
-                <input ref={nameRef} value={nameDraft} onChange={e=>setNameDraft(e.target.value)}
-                  onKeyDown={e=>{ if(e.key==="Enter")submitRename(); if(e.key==="Escape")setEditingName(false); }}
-                  style={{flex:1,background:SURF,border:`1px solid ${SAGE}`,borderRadius:7,padding:"6px 10px",color:INK,fontFamily:SERIF,fontSize:16,fontWeight:500}}
-                />
-                <button onClick={submitRename} style={{background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:7,padding:"6px 10px",fontSize:11,color:"#fff",fontFamily:FONT,fontWeight:600}}>save</button>
-                <button onClick={()=>setEditingName(false)} style={{background:"transparent",border:"1px solid rgba(255,255,255,0.08)",borderRadius:7,padding:"6px 8px",fontSize:11,color:MUTED,fontFamily:FONT}}>✕</button>
-              </div>
-            )}
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <input ref={nameRef} value={nameDraft}
+                onChange={e=>setNameDraft(e.target.value)}
+                onBlur={saveName}
+                onKeyDown={e=>{ if(e.key==="Enter"){saveName();nameRef.current?.blur();} }}
+                style={{fontFamily:SERIF,fontSize:19,color:INK,lineHeight:1.2,background:"transparent",border:"none",borderBottom:`1px solid transparent`,padding:"0 0 1px",width:"100%",outline:"none"}}
+                onFocus={e=>e.target.style.borderBottomColor=SAGE}
+              />
+              {autoSaved&&<span style={{fontSize:10,color:SAGE_D,flexShrink:0}}>✓</span>}
+            </div>
             <div style={{fontSize:10.5,color:MUTED,marginTop:3,letterSpacing:0.2}}>
               {plant.addedDate?`Added ${fmtDate(plant.addedDate)}`:""}
               {plant.logs?.length?` · ${plant.logs.length} care logs`:""}
             </div>
-            {/* Location row */}
-            <div style={{marginTop:10}}>
-              {!editingLoc ? (
-                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <span style={{fontSize:12,color:plant.location?INK:MUTED}}>
-                    📍 {plant.location||<span style={{fontStyle:"italic",color:MUTED}}>No location set</span>}
-                  </span>
-                  <button onClick={()=>{setLocDraft(plant.location||"");setEditingLoc(true);}} style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:20,padding:"2px 9px",fontSize:10,color:SAGE_D,fontFamily:FONT}}>
-                    {plant.location?"edit":"add location"}
-                  </button>
-                </div>
-              ) : (
-                <div style={{display:"flex",gap:7,alignItems:"center"}}>
-                  <input ref={locRef} value={locDraft} onChange={e=>setLocDraft(e.target.value)}
-                    onKeyDown={e=>{ if(e.key==="Enter"){onSetLocation(name,locDraft);setEditingLoc(false);} if(e.key==="Escape")setEditingLoc(false); }}
-                    placeholder="e.g. Shelf A, Prop box, South window"
-                    style={{flex:1,background:SURF,border:`1px solid ${SAGE}`,borderRadius:7,padding:"6px 10px",color:INK,fontFamily:FONT,fontSize:12}}
-                  />
-                  <button onClick={()=>{onSetLocation(name,locDraft);setEditingLoc(false);}} style={{background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:7,padding:"6px 10px",fontSize:11,color:"#fff",fontFamily:FONT,fontWeight:600}}>save</button>
-                  <button onClick={()=>setEditingLoc(false)} style={{background:"transparent",border:"1px solid rgba(255,255,255,0.08)",borderRadius:7,padding:"6px 8px",fontSize:11,color:MUTED,fontFamily:FONT}}>✕</button>
-                </div>
-              )}
+            {/* Location row — auto-saves on blur/Enter */}
+            <div style={{marginTop:8,display:"flex",alignItems:"center",gap:6}}>
+              <span style={{fontSize:13}}>📍</span>
+              <input ref={locRef} value={locDraft}
+                onChange={e=>setLocDraft(e.target.value)}
+                onBlur={saveLoc}
+                onKeyDown={e=>{ if(e.key==="Enter"){saveLoc();locRef.current?.blur();} }}
+                placeholder="Add location — e.g. Shelf A, South window"
+                style={{flex:1,background:"transparent",border:"none",borderBottom:`1px solid ${BORDER}`,padding:"2px 0",color:locDraft?INK:MUTED,fontFamily:FONT,fontSize:12,outline:"none"}}
+                onFocus={e=>e.target.style.borderBottomColor=SAGE}
+                onBlur2={e=>e.target.style.borderBottomColor=BORDER}
+              />
             </div>
-          </div>
           <button onClick={()=>{
-            if(potSoilDirty && !window.confirm("You have unsaved Pot & Soil changes. Close anyway?")) return;
-            onClose();
+                        onClose();
           }} style={{background:"none",border:"none",color:MUTED,fontSize:22,cursor:"pointer",lineHeight:1,flexShrink:0,padding:"0 4px"}}>×</button>
         </div>
 
@@ -534,23 +521,14 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
         <div style={{marginBottom:20}}>
           <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:1.8,marginBottom:9,fontWeight:600,fontFamily:SERIF,fontStyle:"italic",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
             <span>Pot & Soil</span>
-            {potSoilDirty&&(
-              <button onClick={()=>{
-                onLog(name,"__meta__",{potSize:localPotSize,potMaterial:localPotMaterial,soilPreset:localSoilPreset,soilNotes:localSoilNotes});
-                setPotSoilDirty(false);
-                setSavedPot(true); setTimeout(()=>setSavedPot(false),1500);
-              }} style={{background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:20,padding:"3px 14px",fontSize:10,color:"#fff",fontFamily:FONT,fontWeight:600,cursor:"pointer"}}>
-                Save
-              </button>
-            )}
-            {savedPot&&!potSoilDirty&&<span style={{fontSize:10,color:SAGE_D}}>✓ Saved</span>}
+            {autoSaved&&<span style={{fontSize:10,color:SAGE_D}}>✓ saved</span>}
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
             <div>
               <div style={{fontSize:9.5,color:MUTED,marginBottom:4}}>Pot size</div>
               <select value={localPotSize}
-                onChange={e=>{setLocalPotSize(e.target.value);setPotSoilDirty(true);}}
-                style={{width:"100%",background:SURF,border:`1px solid ${potSoilDirty?CLAY:BORDER}`,borderRadius:7,padding:"6px 9px",color:localPotSize?INK:MUTED,fontFamily:FONT,fontSize:12,appearance:"none"}}>
+                onChange={e=>{setLocalPotSize(e.target.value);savePotSoil({potSize:e.target.value});}}
+                style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:7,padding:"6px 9px",color:localPotSize?INK:MUTED,fontFamily:FONT,fontSize:12,appearance:"none"}}>
                 <option value="">— select —</option>
                 <optgroup label="Small">
                   <option value="1oz">1 oz</option>
@@ -570,8 +548,8 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
             <div>
               <div style={{fontSize:9.5,color:MUTED,marginBottom:4}}>Pot material</div>
               <select value={localPotMaterial}
-                onChange={e=>{setLocalPotMaterial(e.target.value);setPotSoilDirty(true);}}
-                style={{width:"100%",background:SURF,border:`1px solid ${potSoilDirty?CLAY:BORDER}`,borderRadius:7,padding:"6px 9px",color:localPotMaterial?INK:MUTED,fontFamily:FONT,fontSize:12,appearance:"none"}}>
+                onChange={e=>{setLocalPotMaterial(e.target.value);savePotSoil({potMaterial:e.target.value});}}
+                style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:7,padding:"6px 9px",color:localPotMaterial?INK:MUTED,fontFamily:FONT,fontSize:12,appearance:"none"}}>
                 <option value="">— select —</option>
                 <option value="plastic">Plastic / nursery pot</option>
                 <option value="terracotta">Terracotta</option>
@@ -582,19 +560,20 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
             <div style={{fontSize:9.5,color:MUTED,marginBottom:5}}>Soil mix</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:7}}>
               {["Chunky Aroid","Medium Aroid","Coir + Perlite","Tree Fern Fiber","Cactus Mix","Semi-hydro","Perlite","Fluval","Self-Watering"].map(preset=>(
-                <button key={preset} onClick={()=>{setLocalSoilPreset(preset);setPotSoilDirty(true);}}
+                <button key={preset} onClick={()=>{setLocalSoilPreset(preset);savePotSoil({soilPreset:preset});}}
                   style={{padding:"4px 12px",borderRadius:20,fontSize:11,fontFamily:FONT,cursor:"pointer",
                     background:localSoilPreset===preset?SAGE:SURF,
-                    border:`1px solid ${localSoilPreset===preset?SAGE_D:potSoilDirty?CLAY:BORDER}`,
+                    border:`1px solid ${localSoilPreset===preset?SAGE_D:BORDER}`,
                     color:localSoilPreset===preset?"#fff":MUTED}}>
                   {preset}
                 </button>
               ))}
             </div>
             <input value={localSoilNotes}
-              onChange={e=>{setLocalSoilNotes(e.target.value);setPotSoilDirty(true);}}
+              onChange={e=>setLocalSoilNotes(e.target.value)}
+              onBlur={e=>savePotSoil({soilNotes:e.target.value})}
               placeholder="Optional notes — e.g. perlite heavy, added orchid bark"
-              style={{width:"100%",background:SURF,border:`1px solid ${potSoilDirty?CLAY:BORDER}`,borderRadius:7,padding:"6px 9px",color:INK,fontFamily:FONT,fontSize:11}}
+              style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:7,padding:"6px 9px",color:INK,fontFamily:FONT,fontSize:11}}
             />
           </div>
           {(localPotMaterial||localPotSize||localSoilPreset)&&(
@@ -766,7 +745,6 @@ function LogModal({plant,type,onLog,onClose}){
                 style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:8,padding:"8px 11px",color:INK,fontFamily:FONT,fontSize:12,colorScheme:"dark"}}
               />
             </div>
-          </div>
         )}
         {/* Date picker */}
         <div style={{marginBottom:12}}>

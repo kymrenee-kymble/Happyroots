@@ -435,12 +435,10 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
                 placeholder="Add location — e.g. Shelf A, South window"
                 style={{flex:1,background:"transparent",border:"none",borderBottom:`1px solid ${BORDER}`,padding:"2px 0",color:locDraft?INK:MUTED,fontFamily:FONT,fontSize:12,outline:"none"}}
                 onFocus={e=>e.target.style.borderBottomColor=SAGE}
-                onBlur2={e=>e.target.style.borderBottomColor=BORDER}
               />
             </div>
-          <button onClick={()=>{
-                        onClose();
-          }} style={{background:"none",border:"none",color:MUTED,fontSize:22,cursor:"pointer",lineHeight:1,flexShrink:0,padding:"0 4px"}}>×</button>
+          </div>
+          <button onClick={onClose} style={{background:"none",border:"none",color:MUTED,fontSize:22,cursor:"pointer",lineHeight:1,flexShrink:0,padding:"0 4px"}}>×</button>
         </div>
 
         {/* Photo section */}

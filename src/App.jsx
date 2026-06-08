@@ -966,8 +966,48 @@ export default function App() {
     (async()=>{
       const freshToken = handleOAuthReturn();
       if (freshToken) { driveAuthRef.current = true; setDriveAuthed(true); }
-      const local = localLoad();
+      let local = localLoad();
       const localCount = local ? Object.keys(local).length : 0;
+
+      // ── One-time migration: convert old deferred flags to pushed log dates ──
+      if (local) {
+        let migrated = false;
+        const now = new Date();
+        Object.keys(local).forEach(name => {
+          const p = local[name];
+          if (!p.deferred) return;
+          Object.entries(p.deferred).forEach(([type, untilStr]) => {
+            if (!untilStr) return;
+            const until = new Date(untilStr);
+            if (until <= now) return; // already past — ignore
+            // Push the last log date forward so daysSince gives the right result
+            const logs = [...(p.logs||[])];
+            const lastIdx = logs.map(l=>l.type).lastIndexOf(type);
+            if (lastIdx !== -1) {
+              const lastLog = logs[lastIdx];
+              const lastDate = new Date(lastLog.date);
+              if (lastDate < until) {
+                // Push log date forward to the deferred-until date
+                logs[lastIdx] = { ...lastLog, date: until.toISOString(), wetDays: (lastLog.wetDays||0)+1 };
+                local[name] = { ...p, logs, deferred: { ...(p.deferred||{}), [type]: null } };
+                migrated = true;
+              }
+            } else {
+              // No log at all — create synthetic entry at the deferred date
+              const newLogs = [...logs, { type, date: until.toISOString(), note: "deferred", wetDays: 1, synthetic: true }];
+              local[name] = { ...p, logs: newLogs, deferred: { ...(p.deferred||{}), [type]: null } };
+              migrated = true;
+            }
+          });
+        });
+        if (migrated) {
+          console.log("Migrated old deferred flags to log dates");
+          // Save migrated data locally immediately
+          try { localStorage.setItem("happyroots-plants", JSON.stringify({ plants: local, savedAt: new Date().toISOString() })); } catch {}
+          try { localStorage.setItem("hr-session", JSON.stringify({ plants: local, savedAt: new Date().toISOString() })); } catch {}
+        }
+      }
+
       setPlants(local || initPlants());
       const token = getStoredToken();
       if (token) {

@@ -34,9 +34,9 @@ const STARTER_PLANTS = [
 ];
 
 const CARE = {
-  water:    { label:"Water + Ferts",  icon:"💧", hue:"196", defaultDays:10,
+  water:    { label:"Water + Ferts",  icon:"💧", hue:"196", defaultDays:7,
               action:"Water thoroughly with Foliage Pro & Hydroguard (diluted). Check soil visually — water only when mix is dry.", scheduled:true },
-  flush:    { label:"Flush (replaces Water)",  icon:"🚿", hue:"258", defaultDays:30,
+  flush:    { label:"Flush (replaces Water)", icon:"🚿", hue:"258", defaultDays:30,
               action:"Plain water only today — skip Foliage Pro & Hydroguard. Flush until water runs freely from the bottom to clear salt buildup.", scheduled:true },
   topdress: { label:"Top Dress",      icon:"🪱", hue:"32",  defaultDays:30,
               action:"Apply a thin layer of earthworm castings to the soil surface. No watering needed immediately after.", scheduled:true },
@@ -48,7 +48,7 @@ const CARE = {
               action:"Record anything worth remembering — new growth, stress signs, changes.", scheduled:false },
 };
 
-const DEFAULT_SCHED = { waterDays:10, flushDays:30, topdressDays:30, foliarDays:14 };
+const DEFAULT_SCHED = { waterDays:7, flushDays:30, topdressDays:30, foliarDays:14 };
 
 // Adaptive learning: weighted median of actual intervals
 // - wet signals (defer days) push interval out: each deferred day adds 0.5d
@@ -58,38 +58,53 @@ const DEFAULT_SCHED = { waterDays:10, flushDays:30, topdressDays:30, foliarDays:
 function learnedInterval(logs, type, defaultDays) {
   const typed = (logs||[]).filter(l=>l.type===type).sort((a,b)=>new Date(a.date)-new Date(b.date));
   if (typed.length < 3) return null;
-  const intervals = [];
+  const pairs = [];
   for (let i=1; i<typed.length; i++) {
+    if (typed[i].early) continue; // early logs excluded — they'd artificially shorten the interval
     const d = Math.round((new Date(typed[i].date)-new Date(typed[i-1].date))/86400000);
-    if (d > 0 && d < 120) intervals.push(d);
+    if (d<=0 || d>120) continue;
+    // Cap at 1.5x default so missed/forgotten waterings don't inflate the learned interval
+    const cappedD = Math.min(d, Math.round(defaultDays * 1.5));
+    const recency = 0.5 + (i / typed.length);         // 0.5–1.5, recent = higher
+    const wetBoost = (typed[i-1].wetDays||0) * 0.5;  // deferred days push interval out
+    const adjusted = Math.max(1, cappedD + wetBoost);
+    pairs.push({ val: adjusted, weight: recency });
   }
-  if (intervals.length < 2) return null;
-  intervals.sort((a,b)=>a-b);
-  const median = intervals[Math.floor(intervals.length/2)];
-  // Blend: 70% learned, 30% default — cap between 3 and 90 days
-  const blended = Math.round(median * 0.7 + defaultDays * 0.3);
-  return Math.min(90, Math.max(3, blended));
+  if (pairs.length < 2) return null;
+  pairs.sort((a,b)=>a.val-b.val);
+  const totalW = pairs.reduce((s,x)=>s+x.weight, 0);
+  let cum = 0, median = pairs[0].val;
+  for (const {val,weight} of pairs) {
+    cum += weight;
+    if (cum >= totalW/2) { median = val; break; }
+  }
+  return Math.min(90, Math.max(3, Math.round(median*0.7 + defaultDays*0.3)));
 }
 
 function effectiveInterval(plant, type) {
   const key = type+"Days";
-  const defaults = { waterDays:10, flushDays:30, topdressDays:30, foliarDays:14 };
+  const defaults = { waterDays:7, flushDays:30, topdressDays:30, foliarDays:14 };
   if (plant.manualOverrides?.[key]) return plant.manualOverrides[key];
   const learned = learnedInterval(plant.logs||[], type, defaults[key]);
   const base = learned || plant.schedule?.[key] || defaults[key];
   // Apply pot/soil modifier to water interval only (flush/topdress are time-based, not dryness-based)
   if (type === "water" && !learned) {
-    // Self-watering pots default to 5 day check interval until learning kicks in
-    const selfWatering = plant.soilPreset === "Self-Watering";
-    const adjustedBase = selfWatering ? 5 : base;
-    return Math.min(90, Math.max(2, Math.round(adjustedBase * potModifier(plant))));
+    return Math.min(90, Math.max(2, Math.round(base * potModifier(plant))));
   }
   return base;
 }
 
-const todayStr  = () => new Date().toDateString();
-const daysSince = d  => d ? Math.floor((Date.now()-new Date(d).getTime())/86400000) : null;
-const fmtDate   = d  => d ? new Date(d).toLocaleDateString("en-US",{month:"short",day:"numeric"}) : "never";
+const toPacific = d => new Date(new Date(d).toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
+const todayStr  = () => toPacific(new Date()).toDateString();
+const daysSince = d => {
+  if (!d) return null;
+  const nowP  = toPacific(new Date());
+  const thenP = toPacific(new Date(d));
+  const nowDay  = new Date(nowP.getFullYear(),  nowP.getMonth(),  nowP.getDate());
+  const thenDay = new Date(thenP.getFullYear(), thenP.getMonth(), thenP.getDate());
+  return Math.floor((nowDay - thenDay) / 86400000);
+};
+const fmtDate = d => d ? new Date(d).toLocaleDateString("en-US", { month:"short", day:"numeric", timeZone:"America/Los_Angeles" }) : "never";
 
 function lastLogOf(plant, type) {
   const logs = (plant.logs||[]).filter(l=>l.type===type).sort((a,b)=>new Date(b.date)-new Date(a.date));
@@ -105,7 +120,6 @@ function mkPlant() {
     potMaterial:"",    // "plastic" | "terracotta"
     soilPreset:"",     // "chunky" | "medium" | "fine" | "leca" | "custom"
     soilNotes:"",      // free text
-    photos:[],         // array of {date, dataUrl} base64 images
   };
 }
 
@@ -114,12 +128,8 @@ function mkPlant() {
 function potModifier(plant) {
   let mod = 1.0;
   if (plant.potMaterial === "terracotta") mod *= 0.72; // dries faster → shorter interval
-  const sizeVal = plant.potSize||"";
-  const size = sizeVal.includes("oz") ? 0 : parseInt(sizeVal)||0;
-  const isOz  = sizeVal.includes("oz");
-  if (isOz)                   mod *= 0.75; // tiny propagation cup — dries very fast
-  else if (size > 0 && size <= 2) mod *= 0.80;
-  else if (size <= 4)         mod *= 0.90;
+  const size = parseInt(plant.potSize)||0;
+  if (size > 0 && size <= 2)  mod *= 0.57; // tiny — ~4d on base 7d
   else if (size >= 8)         mod *= 1.15; // big pot holds moisture longer
   // Chunky mix dries faster; fine mix holds more water
   if      (plant.soilPreset === "Chunky Aroid")   mod *= 0.85; // drains fast
@@ -129,8 +139,6 @@ function potModifier(plant) {
   else if (plant.soilPreset === "Cactus Mix")     mod *= 0.80; // very fast draining
   else if (plant.soilPreset === "Semi-hydro")     mod *= 0.72; // near-LECA behavior
   else if (plant.soilPreset === "Perlite")        mod *= 0.70; // fastest draining
-  else if (plant.soilPreset === "Fluval")         mod *= 0.72; // similar to semi-hydro
-  else if (plant.soilPreset === "Self-Watering")  mod *= 1.00; // reservoir managed separately
   return mod;
 }
 
@@ -140,85 +148,96 @@ function initPlants() {
   return p;
 }
 
+// One-time migration: reset waterDays from old default (10) to new default (7)
+// for any plant that hasn't been manually overridden or learned yet.
+function migratePlants(plants) {
+  let changed = false;
+  const out = {};
+  Object.entries(plants).forEach(([name, p]) => {
+    if (p.schedule?.waterDays === 10 && !p.manualOverrides?.waterDays) {
+      out[name] = { ...p, schedule: { ...p.schedule, waterDays: 7 } };
+      changed = true;
+    } else {
+      out[name] = p;
+    }
+  });
+  return changed ? out : plants;
+}
+
 function buildTasks(plants) {
   const today = todayStr();
   const tasks = [];
   Object.entries(plants).forEach(([name, p]) => {
-    // ── Water vs Flush logic ─────────────────────────────────────────────────
+    // ── Water vs Flush rotation ──────────────────────────────────────────────
     // Flush replaces a watering session — never appears alongside it.
-    //
-    // Rule: when watering is due, check if it has been >= 30 days since the
-    // last flush (measured from last flush date to today, not to last water).
-    // If yes → show Flush instead of Water+Ferts.
-    // If no  → show regular Water+Ferts.
-    //
-    // Example: water every 7d, flush threshold 30d
-    //   Day 0:  Flush
-    //   Day 7:  Water+Ferts
-    //   Day 14: Water+Ferts
-    //   Day 21: Water+Ferts
-    //   Day 28: Water+Ferts  (only 28d since flush — not yet)
-    //   Day 35: Flush        (35d since flush — threshold met on this watering)
-
+    // When watering is due AND it has been >=30d since last flush → show Flush.
+    // Logging a flush counts as a watering session for interval purposes.
     const waterThreshold = effectiveInterval(p, "water");
-    const flushThreshold = 30; // always 30 days — not user-adjustable per the design
-
+    const flushThreshold = 30;
     const waterLast = lastLogOf(p, "water");
     const flushLast = lastLogOf(p, "flush");
-    // Use last of either water or flush as the "last watered" date
-    // (logging a flush counts as a watering session)
     const lastWaterSession = (waterLast && flushLast)
       ? (new Date(waterLast) > new Date(flushLast) ? waterLast : flushLast)
       : (waterLast || flushLast);
-
     const waterAge  = daysSince(lastWaterSession);
-    const flushAge  = daysSince(flushLast); // days since last flush specifically
-
-    const sessionLoggedToday = lastWaterSession && new Date(lastWaterSession).toDateString() === today;
-    // Compare ISO date strings (YYYY-MM-DD) — reliable chronological comparison
-    const todayISO = new Date().toISOString().slice(0,10);
-    const waterDeferred = p.deferred?.["water"] && p.deferred["water"].slice(0,10) > todayISO;
-    const flushDeferred = p.deferred?.["flush"] && p.deferred["flush"].slice(0,10) > todayISO;
-
-    // Is a watering session due?
-    const waterDue    = waterAge !== null && waterAge >= waterThreshold;
-    const waterUpcoming = !waterDue && waterAge !== null && waterAge >= waterThreshold * 0.75;
-    // Has it been 30+ days since last flush? (null = never flushed → flush is due)
-    const flushDue    = flushAge === null || flushAge >= flushThreshold;
-
-    if (!sessionLoggedToday && !waterDeferred) {
-      if (waterDue && flushDue && !flushDeferred) {
-        // This watering session should be a flush
-        tasks.push({ id:`${name}::flush`, plant:name, type:"flush",
-          age:waterAge, threshold:waterThreshold,
-          last:flushLast, overdue: waterAge > waterThreshold,
-          due:true, upcoming:false, neverLogged:false, replacesWater:true });
+    const flushAge  = daysSince(flushLast);
+    const sessionLoggedToday = lastWaterSession && toPacific(new Date(lastWaterSession)).toDateString()===today;
+    const waterDue      = waterAge!==null && waterAge>=waterThreshold;
+    const waterUpcoming = !waterDue && waterAge!==null && waterAge>=waterThreshold*0.75;
+    const flushDue      = flushAge===null || flushAge>=flushThreshold;
+    // When a deferral has expired, count overdue days from the expiry date, not the original watering.
+    // This prevents a deferred plant from jumping straight to overdue — it shows "Due Today" on expiry day.
+    const expiredWaterDef = p.deferred?.water && daysSince(p.deferred.water) >= 0 ? p.deferred.water : null;
+    const expiredFlushDef = p.deferred?.flush && daysSince(p.deferred.flush) >= 0 ? p.deferred.flush : null;
+    const recentExpiredDef = [expiredWaterDef, expiredFlushDef]
+      .filter(Boolean).sort((a,b) => new Date(b) - new Date(a))[0] || null;
+    // Only use a defer expiry as the overdue reference if it happened AFTER the last actual watering.
+    // A stale deferral from before the last watering should have no effect.
+    const deferIsAfterWatering = recentExpiredDef && lastWaterSession
+      ? new Date(recentExpiredDef) > new Date(lastWaterSession)
+      : recentExpiredDef !== null;
+    const deferExpiredAge = (recentExpiredDef && deferIsAfterWatering) ? daysSince(recentExpiredDef) : null;
+    // Treat the defer expiry as a virtual watering: overdue only if waterThreshold days have
+    // passed since the defer expired (not since the original watering date)
+    const virtualWaterAge = deferExpiredAge !== null ? deferExpiredAge : waterAge;
+    const isWaterOverdue = waterDue && virtualWaterAge > waterThreshold;
+    // buildTasks only decides WHAT task type to show based on schedule.
+    // Deferral filtering (active vs deferred) is handled by the useEffect,
+    // which checks p.deferred[t.type] — so flush deferred → flush stays deferred,
+    // not incorrectly replaced by a water-overdue task.
+    if (!sessionLoggedToday) {
+      if (lastWaterSession===null) {
+        tasks.push({ id:`${name}::water`, plant:name, type:"water", age:null, threshold:waterThreshold,
+          last:null, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
+      } else if (waterDue && flushDue) {
+        tasks.push({ id:`${name}::flush`, plant:name, type:"flush", age:waterAge, threshold:waterThreshold,
+          last:flushLast, overdue:isWaterOverdue, due:true, upcoming:false, neverLogged:false,
+          replacesWater:true, daysUntilDue:0 });
       } else if (waterDue || waterUpcoming) {
-        // Regular Water+Ferts session
-        tasks.push({ id:`${name}::water`, plant:name, type:"water",
-          age:waterAge, threshold:waterThreshold,
-          last:lastWaterSession, overdue: waterAge > waterThreshold,
-          due:waterDue, upcoming:waterUpcoming, neverLogged:false });
+        tasks.push({ id:`${name}::water`, plant:name, type:"water", age:waterAge, threshold:waterThreshold,
+          last:lastWaterSession, overdue:isWaterOverdue, due:waterDue, upcoming:waterUpcoming,
+          neverLogged:false, daysUntilDue:waterThreshold-waterAge });
       }
     }
-
-    // ── All other scheduled types (topdress) ─────────────────────────────────
-    ["topdress"].forEach(type => {
-      const threshold = effectiveInterval(p, type);
-      const last = lastLogOf(p, type);
-      const age  = daysSince(last);
-      if (last && new Date(last).toDateString()===today) return;
-      const def = p.deferred?.[type];
-      if (def && def.slice(0,10) > new Date().toISOString().slice(0,10)) return;
-      const overdue  = age!==null && age>threshold;
-      const due      = age!==null && age>=threshold;
-      const upcoming = !due && age!==null && age>=threshold*0.75;
-      // Only show never-logged if plant has been in collection 30+ days
-      const daysSinceAdded = p.addedDate ? daysSince(p.addedDate) : 0;
-      const neverLogged = age===null && daysSinceAdded >= threshold;
-      if (overdue||due||upcoming||neverLogged)
-        tasks.push({ id:`${name}::${type}`, plant:name, type, age, threshold, last, overdue, due, upcoming, neverLogged });
-    });
+    // ── Topdress ─────────────────────────────────────────────────────────────
+    // Topdress is always done alongside a watering session, never independently.
+    // Only generate when water is due AND no water/flush deferral is currently active
+    // (if water is deferred, topdress waits too — they're always done together).
+    const waterSessionDeferred = (p.deferred?.water && daysSince(p.deferred.water) < 0) ||
+                                  (p.deferred?.flush && daysSince(p.deferred.flush) < 0);
+    // Show topdress when water is due OR was already logged today (so it stays visible
+    // on the card after the user completes water, giving them a chance to log topdress too)
+    if ((waterDue || sessionLoggedToday) && !waterSessionDeferred) {
+      const tdThreshold = effectiveInterval(p, "topdress");
+      const tdLast = lastLogOf(p, "topdress");
+      const tdBaseline = tdLast || p.addedDate || null;
+      const tdAge = daysSince(tdBaseline);
+      const tdLoggedToday = tdLast && toPacific(new Date(tdLast)).toDateString() === today;
+      if (!tdLoggedToday && tdAge !== null && tdAge >= tdThreshold) {
+        tasks.push({ id:`${name}::topdress`, plant:name, type:"topdress", age:tdAge, threshold:tdThreshold,
+          last:tdLast, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
+      }
+    }
   });
   tasks.sort((a,b)=>{
     const r=t=>t.overdue?0:t.due?1:t.neverLogged?2:3;
@@ -226,6 +245,23 @@ function buildTasks(plants) {
   });
   return tasks;
 }
+
+const SYSTEM_PROMPT = `You are Kym's personal Hoya care assistant. Kym is an experienced Hoya collector near Seattle with 100+ plants under grow lights.
+
+Care routine:
+- Every watering: Foliage Pro + Hydroguard (diluted). Water only when soil visually dry (clear nursery pots, chunky mix).
+- Monthly flush: plain water only, no fertilizer, flush until water runs from drainage.
+- Monthly top dress: thin layer of earthworm castings on soil surface.
+- Foliar spray as needed, not during lights-on hours.
+- Pest treatments logged with product used and next follow-up date.
+
+Adaptive learning: each plant's watering interval is learned from actual log history (weighted median). Pot material (terracotta dries ~30% faster than plastic), pot size, and soil mix (Chunky Aroid/Cactus Mix/Perlite drain fastest, Medium Aroid is middle, Coir+Perlite holds more moisture, Semi-hydro behaves like LECA) all modify the base interval before learning kicks in. Defer signals push intervals out; early watering pulls them in.
+
+NEVER recommend neem oil — spots and dulls waxy Hoya leaves.
+Preferred pest controls: Spinosad (Captain Jack's), insecticidal soap + rinse, diatomaceous earth, Bonide systemics, sulfur (applied evenings only, not during lights-on).
+Sigillatis has repeated failure history — flag extra caution for that plant.
+Plants have location, pot size, pot material, and soil mix fields — use them when giving care advice.
+Be warm, direct, and treat Kym as a knowledgeable peer.`
 
 // ── Palette: warm white, sage, terracotta, dusty rose ────────────────────────
 const BG      = "#faf8f5";   // warm white
@@ -253,27 +289,8 @@ function Toast({msg,visible}){
   );
 }
 
-// Collapsible room section for Today view
-function CollapsibleRoom({loc, groups, renderCards}) {
-  const [open, setOpen] = useState(true);
-  return (
-    <div style={{borderRadius:12,border:`1px solid rgba(176,107,74,0.2)`,overflow:"hidden"}}>
-      <button onClick={()=>setOpen(v=>!v)} style={{
-        width:"100%",display:"flex",alignItems:"center",justifyContent:"space-between",
-        padding:"10px 14px",background:`rgba(176,107,74,0.06)`,border:"none",
-        fontFamily:"'Playfair Display',serif",fontSize:12,color:"#b06b4a",
-        fontStyle:"italic",cursor:"pointer",textAlign:"left"
-      }}>
-        <span>📍 {loc} · {groups.length} plant{groups.length!==1?"s":""}</span>
-        <span style={{fontSize:14,transition:"transform .2s",transform:open?"rotate(0)":"rotate(-90deg)"}}>▾</span>
-      </button>
-      {open&&<div style={{display:"flex",flexDirection:"column",gap:6,padding:"8px 8px"}}>{renderCards(groups)}</div>}
-    </div>
-  );
-}
-
 // One card per plant, showing ALL due actions for that plant
-function PlantTaskCard({plantName, tasks, onDone, onDefer, onOpenPlant}){
+function PlantTaskCard({plantName, location, tasks, onDone, onDefer, onOpenPlant}){
   const [wetFor, setWetFor] = useState(null); // type currently showing defer picker
 
   // Highest urgency across all tasks for this plant drives the card style
@@ -290,9 +307,10 @@ function PlantTaskCard({plantName, tasks, onDone, onDefer, onOpenPlant}){
       {/* Plant name row */}
       <div style={{display:"flex",alignItems:"center",gap:10,padding:"11px 14px 8px"}}>
         <div style={{flex:1,minWidth:0}}>
-          <div style={{fontSize:13.5,color:INK,fontWeight:600,fontFamily:SERIF,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{plantName}</div>
+          <div style={{fontSize:16,color:INK,fontWeight:600,fontFamily:SERIF,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{plantName}</div>
+          {location&&<div style={{fontSize:12,color:SAGE_D,marginTop:1}}>📍 {location}</div>}
         </div>
-        <button onClick={()=>onOpenPlant(plantName)} style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:20,padding:"3px 11px",fontSize:10,color:MUTED,fontFamily:FONT,flexShrink:0,letterSpacing:0.3}}>
+        <button onClick={()=>onOpenPlant(plantName)} style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:20,padding:"4px 12px",fontSize:12,color:MUTED,fontFamily:FONT,flexShrink:0,letterSpacing:0.3}}>
           details
         </button>
       </div>
@@ -304,9 +322,9 @@ function PlantTaskCard({plantName, tasks, onDone, onDefer, onOpenPlant}){
           const isOD = task.overdue;
           const isDue = task.due && !task.overdue;
           const accentColor = isOD ? "#f09070" : isDue ? `hsl(${c.hue},65%,68%)` : "#8a7a60";
-          const status = isOD    ? `${task.age-task.threshold}d overdue`
-            : task.due            ? `${task.age}d since last`
-            : task.neverLogged    ? "never logged"
+          const status = isOD                        ? `${task.age-task.threshold}d overdue`
+            : task.due && task.age===null              ? "never watered — water now"
+            : task.due                                 ? `${task.age}d since last`
             : `in ~${task.threshold-task.age}d`;
 
           return (
@@ -314,23 +332,23 @@ function PlantTaskCard({plantName, tasks, onDone, onDefer, onOpenPlant}){
               <div style={{display:"flex",alignItems:"center",gap:10,padding:"7px 14px",borderTop:`1px solid ${BORDER}`}}>
                 <span style={{fontSize:16,flexShrink:0,width:22,textAlign:"center"}}>{c.icon}</span>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:12,color:isOD?TERRA:isDue?SAGE_D:MUTED,fontWeight:600}}>{c.label}</div>
-                  <div style={{fontSize:10,color:MUTED,marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.action}</div>
+                  <div style={{fontSize:14,color:isOD?TERRA:isDue?SAGE_D:MUTED,fontWeight:600}}>{c.label}</div>
+                  <div style={{fontSize:11,color:MUTED,marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.action}</div>
                 </div>
-                <div style={{fontSize:10,color:isOD?TERRA:isDue?CLAY:MUTED,flexShrink:0,marginRight:6,fontStyle:"italic"}}>{status}</div>
+                <div style={{fontSize:12,color:isOD?TERRA:isDue?CLAY:MUTED,flexShrink:0,marginRight:6,fontStyle:"italic"}}>{status}</div>
                 <div style={{display:"flex",gap:5,flexShrink:0}}>
                   <button
                     onClick={()=>setWetFor(wetFor===task.type?null:task.type)}
                     style={{
                       background:wetFor===task.type?`${SAGE}18`:SURF,
                       border:`1px solid ${wetFor===task.type?SAGE:BORDER}`,
-                      borderRadius:20,padding:"4px 9px",fontSize:10,
+                      borderRadius:20,padding:"5px 11px",fontSize:12,
                       color:wetFor===task.type?SAGE_D:MUTED,fontFamily:FONT}}>
                     defer
                   </button>
                   <button onClick={()=>onDone(task)}
                     style={{background:SAGE,border:`1px solid ${SAGE_D}`,
-                      borderRadius:20,padding:"4px 12px",fontSize:10,
+                      borderRadius:20,padding:"5px 14px",fontSize:12,
                       color:"#fff",fontFamily:FONT,fontWeight:600}}>
                     ✓ done
                   </button>
@@ -338,15 +356,15 @@ function PlantTaskCard({plantName, tasks, onDone, onDefer, onOpenPlant}){
               </div>
               {wetFor===task.type&&(
                 <div style={{padding:"6px 14px 9px 46px",display:"flex",alignItems:"center",gap:7,flexWrap:"wrap",background:`${SURF}`}}>
-                  <span style={{fontSize:10,color:MUTED}}>Check back in:</span>
+                  <span style={{fontSize:12,color:MUTED}}>Check back in:</span>
                   {[1,2,3,5].map(d=>(
                     <button key={d} onClick={()=>{onDefer(task,d);setWetFor(null);}}
                       style={{background:"#fff",border:`1px solid ${BORDER}`,
-                        borderRadius:20,padding:"3px 10px",fontSize:10.5,color:SAGE_D,fontFamily:FONT,fontWeight:600}}>
+                        borderRadius:20,padding:"4px 12px",fontSize:13,color:SAGE_D,fontFamily:FONT,fontWeight:600}}>
                       {d}d
                     </button>
                   ))}
-                  <span style={{fontSize:9,color:MUTED,fontStyle:"italic"}}>updates schedule</span>
+                  <span style={{fontSize:11,color:MUTED,fontStyle:"italic"}}>updates schedule</span>
                 </div>
               )}
             </div>
@@ -357,41 +375,30 @@ function PlantTaskCard({plantName, tasks, onDone, onDefer, onOpenPlant}){
   );
 }
 
-function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,onDeleteLog,onAddPhoto,onDefer}){
+function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename}){
   const [schedEdit,setSchedEdit]=useState({});
+  const [savedMsg,setSavedMsg]=useState("");
   const [confirmDel,setConfirmDel]=useState(false);
-  const [nameDraft,setNameDraft]=useState(name);
+  const [editingLoc,setEditingLoc]=useState(false);
   const [locDraft,setLocDraft]=useState(plant.location||"");
-  // Pot & Soil — auto-save on every change
-  const [localPotSize,setLocalPotSize]         = useState(plant.potSize||"");
-  const [localPotMaterial,setLocalPotMaterial] = useState(plant.potMaterial||"");
-  const [localSoilPreset,setLocalSoilPreset]   = useState(plant.soilPreset||"");
-  const [localSoilNotes,setLocalSoilNotes]     = useState(plant.soilNotes||"");
-  const [autoSaved,setAutoSaved]               = useState(false);
-  const nameRef=useRef(null);
+  const [editingName,setEditingName]=useState(false);
+  const [nameDraft,setNameDraft]=useState(name);
   const locRef=useRef(null);
-  const saveTimer=useRef(null);
+  const nameRef=useRef(null);
   const logs=[...(plant.logs||[])].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,8);
 
-  const flashSaved = () => { setAutoSaved(true); clearTimeout(saveTimer.current); saveTimer.current=setTimeout(()=>setAutoSaved(false),1500); };
+  useEffect(()=>{ if(editingLoc) setTimeout(()=>locRef.current?.focus(),60); },[editingLoc]);
+  useEffect(()=>{ if(editingName) setTimeout(()=>{ nameRef.current?.focus(); nameRef.current?.select(); },60); },[editingName]);
 
-  const saveName = () => {
+  const submitRename = () => {
     const t = nameDraft.trim();
-    if (t && t !== name) { onRename(name, t); flashSaved(); }
-  };
-
-  const saveLoc = () => {
-    if (locDraft.trim() !== (plant.location||"")) { onSetLocation(name, locDraft.trim()); flashSaved(); }
-  };
-
-  const savePotSoil = (patch) => {
-    onLog(name, "__meta__", patch);
-    flashSaved();
+    if (t && t !== name) onRename(name, t);
+    setEditingName(false);
   };
 
   const intervals = Object.entries(CARE).map(([type,c])=>{
     const key=type+"Days";
-    const defs={waterDays:10,flushDays:30,topdressDays:30,foliarDays:14};
+    const defs={waterDays:7,flushDays:30,topdressDays:30,foliarDays:14};
     const learned=learnedInterval(plant.logs||[],type,defs[key]);
     const manual=plant.manualOverrides?.[key];
     const eff=manual||learned||plant.schedule?.[key]||defs[key];
@@ -405,97 +412,68 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
         {/* Header */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
           <div style={{flex:1,minWidth:0,paddingRight:12}}>
-            <div style={{display:"flex",alignItems:"center",gap:8}}>
-              <input ref={nameRef} value={nameDraft}
-                onChange={e=>setNameDraft(e.target.value)}
-                onBlur={saveName}
-                onKeyDown={e=>{ if(e.key==="Enter"){saveName();nameRef.current?.blur();} }}
-                style={{fontFamily:SERIF,fontSize:19,color:INK,lineHeight:1.2,background:"transparent",border:"none",borderBottom:`1px solid transparent`,padding:"0 0 1px",width:"100%",outline:"none"}}
-                onFocus={e=>e.target.style.borderBottomColor=SAGE}
-              />
-              {autoSaved&&<span style={{fontSize:10,color:SAGE_D,flexShrink:0}}>✓</span>}
-            </div>
+            {!editingName ? (
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <div style={{fontFamily:SERIF,fontSize:19,color:INK,lineHeight:1.2}}>{name}</div>
+                <button onClick={()=>{setNameDraft(name);setEditingName(true);}} style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:20,padding:"2px 9px",fontSize:10,color:MUTED,fontFamily:FONT,flexShrink:0}}>rename</button>
+              </div>
+            ) : (
+              <div style={{display:"flex",gap:7,alignItems:"center"}}>
+                <input ref={nameRef} value={nameDraft} onChange={e=>setNameDraft(e.target.value)}
+                  onKeyDown={e=>{ if(e.key==="Enter")submitRename(); if(e.key==="Escape")setEditingName(false); }}
+                  style={{flex:1,background:SURF,border:`1px solid ${SAGE}`,borderRadius:7,padding:"6px 10px",color:INK,fontFamily:SERIF,fontSize:16,fontWeight:500}}
+                />
+                <button onClick={submitRename} style={{background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:7,padding:"6px 10px",fontSize:11,color:"#fff",fontFamily:FONT,fontWeight:600}}>save</button>
+                <button onClick={()=>setEditingName(false)} style={{background:"transparent",border:"1px solid rgba(255,255,255,0.08)",borderRadius:7,padding:"6px 8px",fontSize:11,color:MUTED,fontFamily:FONT}}>✕</button>
+              </div>
+            )}
             <div style={{fontSize:10.5,color:MUTED,marginTop:3,letterSpacing:0.2}}>
               {plant.addedDate?`Added ${fmtDate(plant.addedDate)}`:""}
               {plant.logs?.length?` · ${plant.logs.length} care logs`:""}
             </div>
-            {/* Location row — auto-saves on blur/Enter */}
-            <div style={{marginTop:8,display:"flex",alignItems:"center",gap:6}}>
-              <span style={{fontSize:13}}>📍</span>
-              <input ref={locRef} value={locDraft}
-                onChange={e=>setLocDraft(e.target.value)}
-                onBlur={saveLoc}
-                onKeyDown={e=>{ if(e.key==="Enter"){saveLoc();locRef.current?.blur();} }}
-                placeholder="Add location — e.g. Shelf A, South window"
-                style={{flex:1,background:"transparent",border:"none",borderBottom:`1px solid ${BORDER}`,padding:"2px 0",color:locDraft?INK:MUTED,fontFamily:FONT,fontSize:12,outline:"none"}}
-                onFocus={e=>e.target.style.borderBottomColor=SAGE}
-              />
+            {/* Location row */}
+            <div style={{marginTop:10}}>
+              {!editingLoc ? (
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:12,color:plant.location?INK:MUTED}}>
+                    📍 {plant.location||<span style={{fontStyle:"italic",color:MUTED}}>No location set</span>}
+                  </span>
+                  <button onClick={()=>{setLocDraft(plant.location||"");setEditingLoc(true);}} style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:20,padding:"2px 9px",fontSize:10,color:SAGE_D,fontFamily:FONT}}>
+                    {plant.location?"edit":"add location"}
+                  </button>
+                </div>
+              ) : (
+                <div style={{display:"flex",gap:7,alignItems:"center"}}>
+                  <input ref={locRef} value={locDraft} onChange={e=>setLocDraft(e.target.value)}
+                    onKeyDown={e=>{ if(e.key==="Enter"){onSetLocation(name,locDraft);setEditingLoc(false);} if(e.key==="Escape")setEditingLoc(false); }}
+                    placeholder="e.g. Shelf A, Prop box, South window"
+                    style={{flex:1,background:SURF,border:`1px solid ${SAGE}`,borderRadius:7,padding:"6px 10px",color:INK,fontFamily:FONT,fontSize:12}}
+                  />
+                  <button onClick={()=>{onSetLocation(name,locDraft);setEditingLoc(false);}} style={{background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:7,padding:"6px 10px",fontSize:11,color:"#fff",fontFamily:FONT,fontWeight:600}}>save</button>
+                  <button onClick={()=>setEditingLoc(false)} style={{background:"transparent",border:"1px solid rgba(255,255,255,0.08)",borderRadius:7,padding:"6px 8px",fontSize:11,color:MUTED,fontFamily:FONT}}>✕</button>
+                </div>
+              )}
             </div>
           </div>
           <button onClick={onClose} style={{background:"none",border:"none",color:MUTED,fontSize:22,cursor:"pointer",lineHeight:1,flexShrink:0,padding:"0 4px"}}>×</button>
         </div>
 
-        {/* Photo section */}
-        <div style={{marginBottom:18}}>
-          <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:1.8,marginBottom:9,fontWeight:600,fontFamily:SERIF,fontStyle:"italic",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-            <span>Photos {plant.photos?.length > 0 ? `(${plant.photos.length}/5)` : ""}</span>
-            <label style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:20,padding:"3px 12px",fontSize:10,color:SAGE_D,fontFamily:FONT,cursor:"pointer"}}>
-              📸 Add photo
-              <input type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={e=>{
-                const file=e.target.files?.[0];
-                if(!file) return;
-                const reader=new FileReader();
-                reader.onload=ev=>onAddPhoto(name,ev.target.result);
-                reader.readAsDataURL(file);
-                e.target.value="";
-              }}/>
-            </label>
-          </div>
-          {plant.photos?.length > 0 ? (
-            <div style={{display:"flex",gap:8,overflowX:"auto",paddingBottom:4}}>
-              {[...plant.photos].reverse().map((ph,i)=>(
-                <div key={i} style={{flexShrink:0,position:"relative"}}>
-                  <img src={ph.dataUrl} alt={`Photo ${i+1}`}
-                    style={{width:80,height:80,objectFit:"cover",borderRadius:10,border:`1px solid ${BORDER}`,display:"block"}}
-                  />
-                  <div style={{fontSize:9,color:MUTED,textAlign:"center",marginTop:3}}>{fmtDate(ph.date)}</div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={{fontSize:11,color:MUTED,fontStyle:"italic"}}>No photos yet — tap Add photo to start tracking progress</div>
-          )}
-        </div>
-
         {/* Log buttons */}
         <div style={{marginBottom:20}}>
           <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:1.8,marginBottom:9,fontWeight:600,fontFamily:SERIF,fontStyle:"italic"}}>Log Care</div>
-          {/* Scheduled care — log or defer each type */}
-          <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:8}}>
+          {/* Scheduled care */}
+          <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:8}}>
             {Object.entries(CARE).filter(([,c])=>c.scheduled).map(([type,c])=>{
               const last=lastLogOf(plant,type);
               const age=daysSince(last);
               const eff=effectiveInterval(plant,type);
               const pct=age!==null?age/eff:null;
-              const isDue=pct!==null&&pct>=0.75;
-              const col=pct===null?"#7a6a5a":pct>=1?"#e07050":pct>=.75?"#c4a060":"#8abd80";
+              const col=pct===null?"#7a6a5a":pct>1?"#e07050":pct>=.75?"#c4a060":"#8abd80";
               return (
-                <div key={type} style={{display:"flex",alignItems:"center",gap:7,background:isDue?`${col}0e`:SURF,border:`1px solid ${isDue?`${col}35`:BORDER}`,borderRadius:12,padding:"9px 12px"}}>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:12,fontWeight:600,color:isDue?col:MUTED}}>{c.icon} {c.label}</div>
-                    <div style={{fontSize:9.5,color:MUTED,marginTop:2}}>{age===null?"never logged":`${age}d ago · due every ${eff}d`}</div>
-                  </div>
-                  {isDue&&(
-                    <button onClick={()=>onDefer({plant:name,type},1)}
-                      style={{background:SURF,border:`1px solid ${BORDER}`,borderRadius:8,padding:"5px 10px",fontSize:10,color:MUTED,fontFamily:FONT}}>
-                      defer
-                    </button>
-                  )}
-                  <button onClick={()=>onLog(name,type)}
-                    style={{background:isDue?SAGE:SURF,border:`1px solid ${isDue?SAGE_D:BORDER}`,borderRadius:8,padding:"5px 12px",fontSize:10,color:isDue?"#fff":MUTED,fontFamily:FONT,fontWeight:isDue?600:400}}>
-                    {isDue?"✓ done":"log"}
-                  </button>
-                </div>
+                <button key={type} onClick={()=>onLog(name,type)} style={{background:col==="#7a6a5a"?SURF:`${col}15`,border:`1px solid ${col==="#7a6a5a"?BORDER:`${col}40`}`,borderRadius:12,padding:"8px 13px",fontSize:11.5,color:col==="#7a6a5a"?MUTED:col,fontFamily:FONT,textAlign:"left",minWidth:80,boxShadow:"0 1px 3px rgba(61,53,48,0.05)"}}>
+                  <div style={{fontWeight:600}}>{c.icon} {c.label}</div>
+                  <div style={{fontSize:9.5,marginTop:3,opacity:.8}}>{age===null?"never":`${age}d ago`}</div>
+                </button>
               );
             })}
           </div>
@@ -509,39 +487,24 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
           </div>
         </div>
 
-        {/* Pot & Soil metadata — local state, single Save button */}
+        {/* Pot & Soil metadata */}
         <div style={{marginBottom:20}}>
-          <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:1.8,marginBottom:9,fontWeight:600,fontFamily:SERIF,fontStyle:"italic",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-            <span>Pot & Soil</span>
-            {autoSaved&&<span style={{fontSize:10,color:SAGE_D}}>✓ saved</span>}
-          </div>
+          <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:1.8,marginBottom:9,fontWeight:600,fontFamily:SERIF,fontStyle:"italic"}}>Pot & Soil</div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
             <div>
-              <div style={{fontSize:9.5,color:MUTED,marginBottom:4}}>Pot size</div>
-              <select value={localPotSize}
-                onChange={e=>{setLocalPotSize(e.target.value);savePotSoil({potSize:e.target.value});}}
-                style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:7,padding:"6px 9px",color:localPotSize?INK:MUTED,fontFamily:FONT,fontSize:12,appearance:"none"}}>
-                <option value="">— select —</option>
-                <optgroup label="Small">
-                  <option value="1oz">1 oz</option>
-                  <option value="2oz">2 oz</option>
-                </optgroup>
-                <optgroup label="Inches">
-                  <option value="1">1"</option>
-                  <option value="2">2"</option>
-                  <option value="3">3"</option>
-                  <option value="4">4"</option>
-                  <option value="5">5"</option>
-                  <option value="6">6"</option>
-                  <option value="8">8"</option>
-                </optgroup>
-              </select>
+              <div style={{fontSize:9.5,color:MUTED,marginBottom:4}}>Pot size (inches)</div>
+              <input type="number" min="1" max="24"
+                defaultValue={plant.potSize||""}
+                placeholder="e.g. 4"
+                onChange={e=>onLog(name,"__meta__",{potSize:e.target.value})}
+                style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:7,padding:"6px 9px",color:INK,fontFamily:FONT,fontSize:12}}
+              />
             </div>
             <div>
               <div style={{fontSize:9.5,color:MUTED,marginBottom:4}}>Pot material</div>
-              <select value={localPotMaterial}
-                onChange={e=>{setLocalPotMaterial(e.target.value);savePotSoil({potMaterial:e.target.value});}}
-                style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:7,padding:"6px 9px",color:localPotMaterial?INK:MUTED,fontFamily:FONT,fontSize:12,appearance:"none"}}>
+              <select defaultValue={plant.potMaterial||""}
+                onChange={e=>onLog(name,"__meta__",{potMaterial:e.target.value})}
+                style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:7,padding:"6px 9px",color:plant.potMaterial?INK:MUTED,fontFamily:FONT,fontSize:12,appearance:"none"}}>
                 <option value="">— select —</option>
                 <option value="plastic">Plastic / nursery pot</option>
                 <option value="terracotta">Terracotta</option>
@@ -551,26 +514,24 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
           <div style={{marginBottom:8}}>
             <div style={{fontSize:9.5,color:MUTED,marginBottom:5}}>Soil mix</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:7}}>
-              {["Chunky Aroid","Medium Aroid","Coir + Perlite","Tree Fern Fiber","Cactus Mix","Semi-hydro","Perlite","Fluval","Self-Watering"].map(preset=>(
-                <button key={preset} onClick={()=>{setLocalSoilPreset(preset);savePotSoil({soilPreset:preset});}}
+              {["Chunky Aroid","Medium Aroid","Coir + Perlite","Tree Fern Fiber","Cactus Mix","Semi-hydro","Perlite"].map(p=>(
+                <button key={p} onClick={()=>onLog(name,"__meta__",{soilPreset:p})}
                   style={{padding:"4px 12px",borderRadius:20,fontSize:11,fontFamily:FONT,cursor:"pointer",
-                    background:localSoilPreset===preset?SAGE:SURF,
-                    border:`1px solid ${localSoilPreset===preset?SAGE_D:BORDER}`,
-                    color:localSoilPreset===preset?"#fff":MUTED}}>
-                  {preset}
+                    background:plant.soilPreset===p?SAGE:SURF,
+                    border:`1px solid ${plant.soilPreset===p?SAGE_D:BORDER}`,
+                    color:plant.soilPreset===p?"#fff":MUTED}}>
+                  {p}
                 </button>
               ))}
             </div>
-            <input value={localSoilNotes}
-              onChange={e=>setLocalSoilNotes(e.target.value)}
-              onBlur={e=>savePotSoil({soilNotes:e.target.value})}
-              placeholder="Optional notes — e.g. perlite heavy, added orchid bark"
+            <input defaultValue={plant.soilNotes||""} placeholder="Optional notes — e.g. perlite heavy, added orchid bark"
+              onBlur={e=>onLog(name,"__meta__",{soilNotes:e.target.value})}
               style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:7,padding:"6px 9px",color:INK,fontFamily:FONT,fontSize:11}}
             />
           </div>
-          {(localPotMaterial||localPotSize||localSoilPreset)&&(
+          {(plant.potMaterial||plant.potSize||plant.soilPreset)&&(
             <div style={{fontSize:9.5,color:SAGE_D,background:`${SAGE}12`,border:`1px solid ${SAGE}30`,borderRadius:7,padding:"6px 10px"}}>
-              💡 Water interval adjusted: {localPotMaterial==="terracotta"?"terracotta dries faster · ":""}{(localPotSize==="1oz"||localPotSize==="2oz")?"tiny pot · ":parseInt(localPotSize)>=8&&localPotSize?"large pot holds moisture · ":""}{localSoilPreset?localSoilPreset+" mix":""} base interval: {effectiveInterval({...plant,potSize:localPotSize,potMaterial:localPotMaterial,soilPreset:localSoilPreset},"water")}d
+              💡 Water interval adjusted: {plant.potMaterial==="terracotta"?"terracotta dries faster · ":""}{parseInt(plant.potSize)<=2&&plant.potSize?"tiny pot · ":parseInt(plant.potSize)>=8&&plant.potSize?"large pot holds moisture · ":""}{plant.soilPreset?plant.soilPreset+" mix":""} base interval: {effectiveInterval(plant,"water")}d
             </div>
           )}
         </div>
@@ -625,21 +586,19 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename,on
             <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:1.8,marginBottom:9,fontWeight:600,fontFamily:SERIF,fontStyle:"italic"}}>Care History</div>
             <div style={{display:"flex",flexDirection:"column",gap:6}}>
               {logs.map((l,i)=>{
-                // Support both old format (l.note as object) and new flat format
-                const product  = l.product || l.note?.product  || "";
-                const nextDate = l.nextDate|| l.note?.nextDate || "";
-                const noteText = typeof l.note==="string" ? l.note : (l.note?.note || "");
+                const meta = l.note && typeof l.note==="object" ? l.note : null;
+                const noteStr = typeof l.note==="string" ? l.note : null;
                 return (
-                  <div key={i} style={{fontSize:11,color:MUTED,borderLeft:`2px solid ${BORDER}`,paddingLeft:9,marginBottom:6,paddingBottom:4}}>
+                  <div key={i} style={{fontSize:11,color:MUTED,borderLeft:`2px solid ${BORDER}`,paddingLeft:9,marginBottom:3}}>
                     <div style={{display:"flex",gap:8,alignItems:"baseline"}}>
                       <span>{CARE[l.type]?.icon}</span>
                       <span style={{color:INK,fontWeight:600}}>{CARE[l.type]?.label}</span>
                       <span style={{color:MUTED,fontSize:10}}>{fmtDate(l.date)}</span>
-                      <button onClick={()=>onDeleteLog(name, (plant.logs||[]).length-1-i)} style={{marginLeft:"auto",background:"transparent",border:"none",color:ROSE,fontSize:11,cursor:"pointer",padding:"0 2px",opacity:0.6,fontFamily:FONT}} title="Remove this log entry">✕</button>
                     </div>
-                    {product  && <div style={{fontSize:10.5,color:INK,marginTop:3}}>🧪 {product}</div>}
-                    {nextDate && <div style={{fontSize:10.5,color:SAGE_D,marginTop:2}}>📅 Next treatment: {fmtDate(nextDate)}</div>}
-                    {noteText && <div style={{fontSize:10.5,color:MUTED,fontStyle:"italic",marginTop:2}}>"{noteText}"</div>}
+                    {meta?.product&&<div style={{fontSize:10,color:MUTED,marginTop:2}}>Product: {meta.product}</div>}
+                    {meta?.nextDate&&<div style={{fontSize:10,color:SAGE_D,marginTop:2}}>Next due: {fmtDate(meta.nextDate)}</div>}
+                    {(meta?.note||noteStr)&&<div style={{fontSize:10,color:MUTED,fontStyle:"italic",marginTop:2}}>{meta?.note||noteStr}</div>}
+                    {l.early&&<div style={{fontSize:10,color:SAGE_D,marginTop:2}}>⏰ Pre-watered — interval preserved</div>}
                   </div>
                 );
               })}
@@ -692,21 +651,21 @@ function AddPlantModal({onAdd,onClose}){
 function LogModal({plant,type,onLog,onClose}){
   const c=CARE[type];
   const [note,setNote]=useState("");
+  const [isEarly,setIsEarly]=useState(false);
   const [pestProduct,setPestProduct]=useState("");
   const [pestNextDate,setPestNextDate]=useState("");
-  // Date picker — defaults to today, lets you backdate entries
-  const todayISO = new Date().toISOString().split("T")[0];
-  const [logDate,setLogDate]=useState(todayISO);
   const isPest = type==="pest";
   const isNote = type==="note";
+  const canBeEarly = type==="water" || type==="flush";
 
   const handleLog = () => {
-    // Use the selected date instead of always now
-    const selectedDate = new Date(logDate + "T12:00:00").toISOString();
     if (isPest) {
-      onLog(plant, type, { product:pestProduct, nextDate:pestNextDate, note }, selectedDate);
+      const payload = { product:pestProduct, nextDate:pestNextDate, note };
+      onLog(plant, type, payload);
+    } else if (canBeEarly) {
+      onLog(plant, type, { note, early: isEarly });
     } else {
-      onLog(plant, type, note, selectedDate);
+      onLog(plant, type, note);
     }
   };
 
@@ -739,22 +698,25 @@ function LogModal({plant,type,onLog,onClose}){
             </div>
           </div>
         )}
-        {/* Date picker */}
-        <div style={{marginBottom:12}}>
-          <div style={{fontSize:10,color:MUTED,marginBottom:4,textTransform:"uppercase",letterSpacing:1.5,fontStyle:"italic"}}>Date</div>
-          <input type="date" value={logDate} onChange={e=>setLogDate(e.target.value)}
-            style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:8,padding:"8px 11px",color:INK,fontFamily:FONT,fontSize:12,colorScheme:"light"}}
-          />
-        </div>
+        {canBeEarly && (
+          <button onClick={()=>setIsEarly(e=>!e)}
+            style={{display:"flex",alignItems:"center",gap:8,background:isEarly?`${SAGE}18`:SURF,
+              border:`1px solid ${isEarly?SAGE:BORDER}`,borderRadius:8,padding:"8px 12px",
+              fontSize:11,color:isEarly?SAGE_D:MUTED,fontFamily:FONT,marginBottom:11,width:"100%",textAlign:"left",cursor:"pointer"}}>
+            <span style={{fontSize:14,lineHeight:1}}>{isEarly?"✓":"○"}</span>
+            <div>
+              <div style={{fontWeight:600}}>Pre-watering (going away)</div>
+              <div style={{fontSize:9.5,marginTop:1,fontStyle:"italic",opacity:0.8}}>Updates next due date · won't shorten the watering interval</div>
+            </div>
+          </button>
+        )}
         <textarea value={note} onChange={e=>setNote(e.target.value)}
           placeholder={isPest?"Optional notes — e.g. signs observed, dilution used":isNote?"What did you observe?":"Optional note — e.g. soil was nearly dry, slight wilt"}
           rows={isPest?2:3}
           style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:9,padding:"10px 13px",color:INK,fontFamily:FONT,fontSize:12,resize:"none",marginBottom:13}}
         />
         <div style={{display:"flex",gap:8}}>
-          <button onClick={handleLog} style={{flex:1,background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:10,padding:"11px",fontSize:13,color:"#fff",fontFamily:FONT,fontWeight:600}}>
-            {(()=>{ const t=new Date().toISOString().slice(0,10); return logDate===t?"Log today":"Log for "+new Date(logDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric"}); })()}
-          </button>
+          <button onClick={handleLog} style={{flex:1,background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:10,padding:"11px",fontSize:13,color:"#fff",fontFamily:FONT,fontWeight:600}}>{isEarly?"Log early":"Log today"}</button>
           <button onClick={onClose} style={{flex:1,background:SURF,border:`1px solid ${BORDER}`,borderRadius:10,padding:"11px",fontSize:13,color:MUTED,fontFamily:FONT}}>Cancel</button>
         </div>
       </div>
@@ -762,137 +724,142 @@ function LogModal({plant,type,onLog,onClose}){
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Google Drive — redirect-based OAuth (works on all browsers incl. mobile Safari)
-// Flow: tap Connect → full-page redirect to Google → sign in → back to app with token
-// ═══════════════════════════════════════════════════════════════════════════════
-
+// ── Google Drive API (real OAuth, not MCP) ───────────────────────────────────
 const GDRIVE_CLIENT_ID = "425465979045-j818osj85725uknva1o0mp0boabvtbrd.apps.googleusercontent.com";
-const GDRIVE_API_KEY   = import.meta.env.VITE_GOOGLE_API_KEY || "";
+const GDRIVE_API_KEY   = "AIzaSyA4sN1gHadoYR1fn5V-M8KksiXj138Ke8I";
 const GDRIVE_SCOPE     = "https://www.googleapis.com/auth/drive.appdata";
 const GDRIVE_FILE      = "happyroots-data.json";
+// Using appDataFolder — a hidden private folder only this app can see.
+// No clutter in your Drive, no sharing concerns.
 
-let _gapiReady   = false;
+let _gapiReady = false;
+let _tokenClient = null;
 let _accessToken = null;
+let _refreshTimer = null;
 
-// ── Token management ──────────────────────────────────────────────────────────
-function getStoredToken() {
-  if (_accessToken) return _accessToken;
-  try {
-    const raw = localStorage.getItem("hr-token");
-    if (!raw) return null;
-    const { token, exp } = JSON.parse(raw);
-    if (Date.now() < exp) { _accessToken = token; return token; }
-    localStorage.removeItem("hr-token");
-  } catch {}
-  return null;
+// Called every time a token is received (initial auth or proactive refresh).
+// Schedules a proactive re-auth 5 min before expiry so saves never fail.
+function _handleToken(resp, resolve, reject) {
+  if (resp.error) { if (reject) reject(resp); return; }
+  _accessToken = resp.access_token;
+  try { localStorage.setItem("hr-drive-authed", "1"); } catch {}
+  if (_refreshTimer) clearTimeout(_refreshTimer);
+  const refreshIn = Math.max(30, (resp.expires_in || 3600) - 300); // 5 min early
+  _refreshTimer = setTimeout(() => {
+    if (!_tokenClient) return;
+    console.log("🔄 Proactively refreshing Drive token…");
+    _tokenClient.callback = r => _handleToken(r, null, null);
+    _tokenClient.requestAccessToken({ prompt: "" });
+  }, refreshIn * 1000);
+  if (resolve) resolve(_accessToken);
 }
 
-function storeToken(token, expiresIn) {
-  _accessToken = token;
-  // Refresh 10 minutes before expiry so we never hit the window mid-session
-  const exp = Date.now() + (expiresIn - 600) * 1000;
-  try { localStorage.setItem("hr-token", JSON.stringify({ token, exp })); } catch {}
-  try { localStorage.setItem("hr-authed", "1"); } catch {}
-}
-
-// ── OAuth redirect ────────────────────────────────────────────────────────────
-function startOAuthRedirect() {
-  const params = new URLSearchParams({
-    client_id:              GDRIVE_CLIENT_ID,
-    redirect_uri:           window.location.origin + "/",
-    response_type:          "token",
-    scope:                  GDRIVE_SCOPE,
-    include_granted_scopes: "true",
-  });
-  window.location.href = "https://accounts.google.com/o/oauth2/v2/auth?" + params;
-}
-
-// Call on every app load — extracts token from URL hash if returning from Google
-function handleOAuthReturn() {
-  if (!window.location.hash.includes("access_token")) return null;
-  const p = new URLSearchParams(window.location.hash.slice(1));
-  const token = p.get("access_token");
-  const exp   = parseInt(p.get("expires_in") || "3599");
-  if (!token) return null;
-  storeToken(token, exp);
-  // Clean token from URL so it's not visible / accidentally re-used
-  window.history.replaceState({}, "", window.location.pathname);
-  return token;
-}
-
-// ── GAPI ──────────────────────────────────────────────────────────────────────
-function loadScript(src) {
-  return new Promise(r => {
+function loadGapiScript() {
+  return new Promise(resolve => {
+    if (window.gapi) { resolve(); return; }
     const s = document.createElement("script");
-    s.src = src; s.onload = r;
+    s.src = "https://apis.google.com/js/api.js";
+    s.onload = resolve;
+    document.head.appendChild(s);
+  });
+}
+
+function loadGisScript() {
+  return new Promise(resolve => {
+    if (window.google?.accounts) { resolve(); return; }
+    const s = document.createElement("script");
+    s.src = "https://accounts.google.com/gsi/client";
+    s.onload = resolve;
     document.head.appendChild(s);
   });
 }
 
 async function initGapi() {
   if (_gapiReady) return;
-  if (!window.gapi) await loadScript("https://apis.google.com/js/api.js");
-  await new Promise(r => window.gapi.load("client", r));
-  await window.gapi.client.init({
-    apiKey: GDRIVE_API_KEY,
-    discoveryDocs: ["https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"],
-  });
+  await loadGapiScript();
+  await new Promise(resolve => window.gapi.load("client", resolve));
+  await window.gapi.client.init({ apiKey: GDRIVE_API_KEY, discoveryDocs: ["https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"] });
   _gapiReady = true;
 }
 
-// ── Drive file operations ─────────────────────────────────────────────────────
-async function driveRead() {
+async function getAccessToken(forcePrompt = false) {
+  if (_accessToken && !forcePrompt) return _accessToken;
+  await loadGisScript();
+  return new Promise((resolve, reject) => {
+    if (!_tokenClient) {
+      _tokenClient = window.google.accounts.oauth2.initTokenClient({
+        client_id: GDRIVE_CLIENT_ID,
+        scope: GDRIVE_SCOPE,
+        callback: resp => _handleToken(resp, resolve, reject),
+      });
+    } else {
+      _tokenClient.callback = resp => _handleToken(resp, resolve, reject);
+    }
+    const prompt = forcePrompt ? "consent" : "";
+    _tokenClient.requestAccessToken({ prompt });
+  });
+}
+
+async function driveReadFile() {
   await initGapi();
-  const token = getStoredToken();
-  if (!token) throw new Error("no token");
-  window.gapi.client.setToken({ access_token: token });
+  const token = await getAccessToken();
+  // Find file in appDataFolder
   const list = await window.gapi.client.drive.files.list({
     spaces: "appDataFolder",
-    q: `name='${GDRIVE_FILE}'`,
-    fields: "files(id)",
+    q: `name = '${GDRIVE_FILE}'`,
+    fields: "files(id,name,modifiedTime)",
   });
   const files = list.result.files || [];
   if (!files.length) return null;
-  const resp = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${files[0].id}?alt=media`,
-    { headers: { Authorization: "Bearer " + token } }
-  );
+  const fileId = files[0].id;
+  const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
   if (!resp.ok) return null;
   return await resp.json();
 }
 
-async function driveWrite(payload) {
+async function driveWriteFile(payload) {
   await initGapi();
-  const token = getStoredToken();
-  if (!token) { console.log("driveWrite: no token"); return; }
-  window.gapi.client.setToken({ access_token: token });
+  const token = await getAccessToken();
   const body = JSON.stringify({ ...payload, savedAt: new Date().toISOString() });
+
+  // Check if file already exists
   const list = await window.gapi.client.drive.files.list({
     spaces: "appDataFolder",
-    q: `name='${GDRIVE_FILE}'`,
+    q: `name = '${GDRIVE_FILE}'`,
     fields: "files(id)",
   });
   const files = list.result.files || [];
+
   if (files.length) {
+    // Update existing file
     await fetch(`https://www.googleapis.com/upload/drive/v3/files/${files[0].id}?uploadType=media`, {
       method: "PATCH",
-      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body,
     });
   } else {
+    // Create new file in appDataFolder
     const meta = JSON.stringify({ name: GDRIVE_FILE, parents: ["appDataFolder"] });
     const form = new FormData();
     form.append("metadata", new Blob([meta], { type: "application/json" }));
     form.append("file",     new Blob([body], { type: "application/json" }));
     await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
       method: "POST",
-      headers: { Authorization: "Bearer " + token },
+      headers: { Authorization: `Bearer ${token}` },
       body: form,
     });
   }
 }
 
+function readLocalSavedAt() {
+  try {
+    const raw = localStorage.getItem("hoya-plants-stable");
+    if (raw) return JSON.parse(raw)?.savedAt || null;
+  } catch {}
+  return null;
+}
 
 export default function App() {
   const [plants,setPlants]           = useState(null);
@@ -904,140 +871,239 @@ export default function App() {
   const [logModal,setLogModal]       = useState(null);
   const [addModal,setAddModal]       = useState(false);
   const [search,setSearch]           = useState("");
-  const [sortBy,setSortBy]           = useState("name");
-  const [filterLoc,setFilterLoc]     = useState("");
+  const [locFilter,setLocFilter]     = useState("");
+  const [chatMsgs,setChatMsgs]       = useState([]);
+  const [chatInput,setChatInput]     = useState("");
+  const [chatLoading,setChatLoading] = useState(false);
   const [toast,setToast]             = useState({msg:"",visible:false});
-  const [driveStatus,setDriveStatus] = useState("idle");
+  const [driveStatus,setDriveStatus] = useState("idle"); // idle | connecting | syncing | saved | error
   const [driveAuthed,setDriveAuthed] = useState(false);
   const [showDataMenu,setShowDataMenu] = useState(false);
-  const [groupByLoc,setGroupByLoc]     = useState(false);
-  const saveTimer  = useRef(null);
-  const importRef  = useRef(null);
-  const driveAuthRef = useRef(false);
-  const isFirstLoad  = useRef(true);
+  const chatEnd = useRef(null);
+  const saveTimer = useRef(null);
+  const importRef = useRef(null);
+  const driveAuthedRef = useRef(false); // ref so persist closure never goes stale
 
-  const showToast = (msg) => {
-    setToast({msg, visible:true});
-    setTimeout(() => setToast(t => ({...t, visible:false})), 2800);
-  };
 
-  // ── Local storage helpers ─────────────────────────────────────────────────
-  const SKEY = "happyroots-plants";
 
-  function localSave(p) {
-    const savedAt = new Date().toISOString();
-    const payload = JSON.stringify({ plants:p, savedAt });
-    try { localStorage.setItem(SKEY, payload); } catch {}
-    try { localStorage.setItem("happyroots-plants", payload); } catch {}
-    try { localStorage.setItem("hr-session", payload); } catch {}
-    try { localStorage.setItem("hoya-plants-stable", payload); } catch {}
-  }
+  const showToast = msg => { setToast({msg,visible:true}); setTimeout(()=>setToast(t=>({...t,visible:false})),2800); };
 
-  function localLoad() {
-    const keys = [SKEY, "hr-session", "hoya-plants-stable", "hoya-v5", "hoya-v4", "hoya-v3"];
-    for (const k of keys) {
+  // ── Stable local storage keys — never change these ────────────────────────
+  const PLANTS_KEY  = "hoya-plants-stable";
+  const CHAT_KEY    = "hoya-chat-stable";
+  const LEGACY_KEYS = ["hoya-v5","hoya-v4","hoya-v3"];
+  const LEGACY_CHAT = ["hoya-v5-chat","hoya-v4-chat","hoya-v3-chat"];
+
+  function readLocal() {
+    // hoya-plants-stable is checked first — it's written by persist() and always
+    // has the user's most recent saves. hr-session holds stale Drive data from
+    // the last startup load and must NOT take precedence over local saves.
+    const allKeys = ["hoya-plants-stable","hr-session","hoya-v5","hoya-v4","hoya-v3"];
+    for (const k of allKeys) {
       try {
         const raw = localStorage.getItem(k);
-        if (!raw) continue;
+        if (!raw) { console.log("key " + k + ": not found"); continue; }
         const parsed = JSON.parse(raw);
-        const p = parsed?.plants || parsed;
-        if (p && typeof p === "object" && !Array.isArray(p) && Object.keys(p).length > 0) return p;
+        const plants = (parsed && parsed.plants && typeof parsed.plants === "object") ? parsed.plants : parsed;
+        if (plants && typeof plants === "object" && !Array.isArray(plants) && Object.keys(plants).length > 0) {
+          console.log("✓ loaded " + Object.keys(plants).length + " plants from: " + k);
+          if (k !== "hoya-plants-stable") {
+            localStorage.setItem("hoya-plants-stable", JSON.stringify({ plants, savedAt: new Date().toISOString() }));
+            console.log("migrated to stable key");
+          }
+          return plants;
+        } else {
+          console.log("key " + k + ": empty/invalid");
+        }
+      } catch(e) {
+        console.log("key " + k + " error: " + String(e));
+      }
+    }
+    return null;
+  }
+
+  function readLocalChat() {
+    const allChatKeys = ["hoya-chat-stable","hoya-v5-chat","hoya-v4-chat","hoya-v3-chat"];
+    for (const k of allChatKeys) {
+      try {
+        const raw = localStorage.getItem(k);
+        if (raw) {
+          const d = JSON.parse(raw);
+          if (k !== "hoya-chat-stable") localStorage.setItem("hoya-chat-stable", raw);
+          return d;
+        }
       } catch {}
     }
     return null;
   }
 
-  function localLoadChat() {
-    try {
-      const keys = ["happyroots-chat","hoya-chat-stable","hoya-v5-chat"];
-      for (const k of keys) {
-        const r = localStorage.getItem(k);
-        if (r) return JSON.parse(r);
-      }
-    } catch {}
-    return null;
-  }
-
-  // ── On mount: Drive is the source of truth, no merging ─────────────────────
+  // Load on mount: local first (instant), then Drive in background
   useEffect(()=>{
     (async()=>{
-      const freshToken = handleOAuthReturn();
-      if (freshToken) { driveAuthRef.current = true; setDriveAuthed(true); }
-      let local = localLoad();
-      const localCount = local ? Object.keys(local).length : 0;
-
-      setPlants(local || initPlants());
-      const token = getStoredToken();
-      if (token) {
-        driveAuthRef.current = true;
-        setDriveAuthed(true);
-        setDriveStatus("connecting");
-        try {
-          const data = await driveRead();
-          if (data?.plants && Object.keys(data.plants).length > 0) {
-            setPlants(data.plants);
-            localSave(data.plants);
-            setDriveStatus("saved");
-            if (freshToken) showToast("☁️ Connected! " + Object.keys(data.plants).length + " plants loaded");
-          } else {
-            if (local && localCount > 0) {
-              await driveWrite({ plants: local });
-              showToast("☁️ Drive connected — " + localCount + " plants saved");
-            } else if (freshToken) showToast("☁️ Drive connected — ready to save");
-            setDriveStatus("saved");
+      // ── localStorage sanity check ──────────────────────────────────────────
+      try {
+        localStorage.setItem("hoya-test", "ok");
+        const testVal = localStorage.getItem("hoya-test");
+        console.log("✓ localStorage OK: " + testVal);
+        // List all hoya keys
+        for (let i=0; i<localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith("hoya")) {
+            const len = localStorage.getItem(k)?.length || 0;
+            console.log("found: " + k + " (" + len + " chars)");
           }
-        } catch(e) {
-          console.log("Drive load error:", e?.message||e);
-          setDriveStatus("disconnected");
         }
-      } else {
+      } catch(e) {
+        console.log("✗ localStorage BROKEN: " + String(e));
+      }
+      // 1. Load local immediately (synchronous localStorage)
+      const local = readLocal();
+      const localChat = readLocalChat();
+      console.log(local ? ("✓ loaded " + Object.keys(local).length + " plants") : "⚠ no local data — starting fresh");
+      setPlants(migratePlants(local || initPlants()));
+      if (localChat) setChatMsgs(localChat);
+
+      // 2. Try Drive — always. Silent re-auth if previously connected.
+      setDriveStatus("connecting");
+      const prevAuthed = localStorage.getItem("hr-drive-authed") === "1";
+      console.log(prevAuthed ? "previously authed — trying Drive" : "first time — need to connect Drive");
+      try {
+        const driveData = await driveReadFile();
+        if (driveData?.plants) {
+          const localSavedAt = readLocalSavedAt();
+          const driveIsNewer = !localSavedAt || new Date(driveData.savedAt || 0) >= new Date(localSavedAt);
+          if (driveIsNewer) {
+            setPlants(migratePlants(driveData.plants));
+            if (driveData.chat) setChatMsgs(driveData.chat);
+            try { localStorage.setItem("hr-session", JSON.stringify({ plants: driveData.plants, savedAt: driveData.savedAt })); } catch {}
+            console.log("✓ Drive loaded " + Object.keys(driveData.plants).length + " plants (Drive is newer)");
+            showToast("☁️ Loaded from Google Drive");
+          } else {
+            // Local has newer data (Drive saves failed while token was expired)
+            // Keep local plants (already loaded), push them to Drive so it catches up.
+            console.log("Local is newer than Drive — keeping local, pushing to Drive");
+            const localPlants = readLocal();
+            try {
+              await driveWriteFile({ plants: localPlants, chat: (localChat||[]).slice(-40), savedAt: localSavedAt });
+              console.log("✓ Pushed local to Drive");
+            } catch(e2) {
+              console.log("✗ Push to Drive failed: " + e2);
+            }
+            showToast("☁️ Drive connected — synced latest data");
+          }
+          setDriveAuthed(true); driveAuthedRef.current = true;
+          try { localStorage.setItem("hr-drive-authed","1"); } catch {}
+          setDriveStatus("saved");
+        } else {
+          setDriveAuthed(true); driveAuthedRef.current = true;
+          setDriveStatus("idle");
+          console.log("Drive connected, no file yet — will create on first save");
+        }
+      } catch(e) {
+        console.log("Drive load error: " + (e?.message||String(e)));
         setDriveStatus("disconnected");
       }
     })();
   },[]);
 
-  // ── Connect Drive (redirect flow — works on all mobile browsers) ────────────
-  function connectDrive() {
-    // Save anything in memory before we navigate away
-    if (plants) localSave(plants);
-    showToast("Taking you to Google sign-in…");
-    setTimeout(() => startOAuthRedirect(), 700);
+  // Connect to Drive manually (triggers Google OAuth popup)
+  async function connectDrive() {
+    setDriveStatus("connecting");
+    console.log("connectDrive: starting auth flow");
+    try {
+      await initGapi();
+      console.log("GAPI ready, requesting token...");
+      _accessToken = null;
+      const token = await getAccessToken(true);
+      console.log("✓ got token: " + token.slice(0,10) + "...");
+      setDriveAuthed(true); driveAuthedRef.current = true;
+      try { localStorage.setItem("hr-drive-authed","1"); } catch {}
+      setDriveStatus("syncing");
+      showToast("☁️ Signed in — loading your data…");
+      console.log("loading from Drive...");
+      const driveData = await driveReadFile();
+      if (driveData?.plants) {
+        const localSavedAt = readLocalSavedAt();
+        const driveIsNewer = !localSavedAt || new Date(driveData.savedAt || 0) >= new Date(localSavedAt);
+        if (driveIsNewer) {
+          const count = Object.keys(driveData.plants).length;
+          console.log("✓ loaded " + count + " plants from Drive (Drive is newer)");
+          setPlants(migratePlants(driveData.plants));
+          if (driveData.chat) setChatMsgs(driveData.chat);
+          try { localStorage.setItem("hr-session", JSON.stringify({ plants: driveData.plants, savedAt: driveData.savedAt })); } catch {}
+          setDriveStatus("saved");
+          showToast("☁️ Loaded " + count + " plants from Drive");
+        } else {
+          // Local is newer — keep local, push to Drive so it catches up
+          console.log("Local is newer than Drive — keeping local, pushing to Drive");
+          const localPlants = readLocal();
+          try {
+            await driveWriteFile({ plants: localPlants, chat: [], savedAt: localSavedAt });
+            console.log("✓ Pushed local to Drive");
+            setDriveStatus("saved");
+            showToast("☁️ Drive connected — synced your latest data");
+          } catch(e2) {
+            console.log("✗ Push to Drive failed: " + e2);
+            setDriveStatus("error");
+            showToast("⚠️ Drive connected but sync failed");
+          }
+        }
+      } else {
+        console.log("no Drive file yet — will create on first save");
+        setDriveStatus("saved");
+        showToast("☁️ Drive connected — ready to save");
+      }
+    } catch(e) {
+      const msg = e?.error || e?.message || String(e);
+      console.log("✗ Drive auth failed: " + msg);
+      setDriveStatus("disconnected");
+      if (msg.includes("popup") || msg.includes("blocked")) {
+        showToast("⚠️ Popup blocked — allow popups for claude.ai");
+      } else {
+        showToast("⚠️ Drive connection failed: " + msg);
+      }
+    }
   }
 
-  // ── Persist: save locally always, Drive 2s after last change ───────────────
-  // If the token has expired, saves the pending data to localStorage and
-  // triggers a re-auth redirect. On return the load useEffect detects local
-  // is newer than Drive and pushes it up automatically.
+  // Debounced persist: local immediately, Drive 4s later
   const persist = useCallback(async (p, chat) => {
-    if (!p || typeof p !== "object") return;
-    // Always save locally first — this is the safety net
-    localSave(p);
-    try { localStorage.setItem("happyroots-chat", JSON.stringify((chat||[]).slice(-40))); } catch {}
-    // Check token
-    const token = getStoredToken();
-    if (!token) {
-      // Token expired — mark disconnected but data is safe in localStorage
-      // User will need to reconnect; on reconnect the load useEffect will
-      // detect local is newer and push it up to Drive automatically
-      setDriveStatus("disconnected");
-      showToast("⚠️ Drive token expired — tap Reconnect Drive to re-sync");
+    const KEY = "hoya-plants-stable"; // hardcoded — no closure dependency
+    console.log("persist called: " + (p ? Object.keys(p).length + " plants" : "NULL"));
+    if (!p || typeof p !== "object") { console.log("✗ persist: invalid data"); return; }
+    const saved = { plants: p, savedAt: new Date().toISOString() };
+    // ── Local save (synchronous localStorage) ────────────────────────────────
+    try {
+      const json = JSON.stringify(saved);
+      localStorage.setItem(KEY, json);
+      // Verify immediately
+      const verify = localStorage.getItem(KEY);
+      if (verify) {
+        const vp = JSON.parse(verify);
+        const count = vp?.plants ? Object.keys(vp.plants).length : "?";
+        console.log("✓ saved & verified: " + count + " plants");
+      } else {
+        console.log("✗ save failed — key missing after write");
+      }
+    } catch(e) {
+      console.log("✗ local save FAILED: " + String(e));
+    }
+    // ── Drive save (debounced 4s) ────────────────────────────────────────────
+    if (!driveAuthedRef.current) {
+      console.log("Drive not authed — local only");
       return;
     }
-    if (!driveAuthRef.current) { driveAuthRef.current = true; setDriveAuthed(true); }
     if (saveTimer.current) clearTimeout(saveTimer.current);
     setDriveStatus("syncing");
     saveTimer.current = setTimeout(async () => {
       try {
-        await driveWrite({ plants:p, chat:(chat||[]).slice(-40) });
+        await driveWriteFile({ plants: p, chat: (chat||[]).slice(-40), savedAt: saved.savedAt });
         setDriveStatus("saved");
+        console.log("✓ Drive saved");
       } catch(e) {
-        console.log("Drive write error:", e?.message||e);
-        // Save to local so nothing is lost — user can reconnect to re-sync
-        localSave(p);
+        console.log("✗ Drive save FAILED: " + e);
         setDriveStatus("error");
-        showToast("⚠️ Drive save failed — data saved locally. Tap Reconnect Drive");
       }
-    }, 2000);
+    }, 4000);
   }, []);
 
   useEffect(()=>{
@@ -1047,43 +1113,47 @@ export default function App() {
     const active=[],done=[],deferred=[];
     all.forEach(t=>{
       const p=plants[t.plant];
-      const now = new Date();
-      // Check deferred flag first
-      const defTypes = (t.type==="water"||t.type==="flush") ? ["water","flush"] : [t.type];
-      const isDeferred = defTypes.some(dt => {
-        const d = p.deferred?.[dt];
-        // Deferred until X means still deferred ON X — compare date strings
-        return d && d.slice(0,10) > new Date().toISOString().slice(0,10);
-      });
-      if (isDeferred) { deferred.push(t); return; }
-      // Check if logged today — use combined water+flush log for water/flush tasks
-      const last = (t.type==="water"||t.type==="flush")
-        ? [lastLogOf(p,"water"), lastLogOf(p,"flush")].filter(Boolean).sort((a,b)=>new Date(b)-new Date(a))[0]
-        : lastLogOf(p, t.type);
-      const lastDate = last ? new Date(last) : null;
-      if(last && lastDate.toDateString()===today){done.push(t);return;}
+      const last=lastLogOf(p,t.type);
+      if(last&&toPacific(new Date(last)).toDateString()===today){done.push(t);return;}
+      const def=p.deferred?.[t.type];
+      if(def && daysSince(def) < 0){deferred.push(t);return;}
       active.push(t);
     });
+    // Stable plant order: lock positions on first build, preserve across updates within the session.
+    // This keeps a plant in place after logging one of its tasks (e.g. water logged, topdress remains).
+    if(sessionOrderRef.current===null){
+      sessionOrderRef.current=[...new Set(active.map(t=>t.plant))];
+    } else {
+      const activePlantSet=new Set(active.map(t=>t.plant));
+      const kept=sessionOrderRef.current.filter(n=>activePlantSet.has(n));
+      const added=[...new Set(active.map(t=>t.plant))].filter(n=>!kept.includes(n));
+      sessionOrderRef.current=[...kept,...added];
+    }
+    const orderIdx=new Map(sessionOrderRef.current.map((n,i)=>[n,i]));
+    active.sort((a,b)=>(orderIdx.get(a.plant)??999)-(orderIdx.get(b.plant)??999));
     setTasks(active); setDoneTasks(done); setDeferred(deferred);
   },[plants]);
 
   // ── Auto-save whenever plants changes ─────────────────────────────────────
   // This is the canonical React pattern: derive saves from state, not from event handlers.
   // The isFirstLoad ref prevents saving the initial load back over itself.
-  // Auto-save on every plants change
+  const sessionOrderRef = useRef(null); // stable plant order for today's session
+  const isFirstLoad = useRef(true);
   useEffect(()=>{
     if(!plants) return;
     if(isFirstLoad.current){ isFirstLoad.current = false; return; }
-    persist(plants, []);
+    console.log("plants changed → persist " + Object.keys(plants).length + " plants");
+    persist(plants, chatMsgs);
   },[plants]);
 
+  useEffect(()=>{ chatEnd.current?.scrollIntoView({behavior:"smooth"}); },[chatMsgs,chatLoading]);
 
   // ── All mutation functions follow the same pattern: ──────────────────────────
   // 1. Compute the full new plants object (don't rely on prev inside setPlants for persist)
   // 2. Call setPlants with it
   // 3. Call persist with it directly — no closures, no setTimeout, no stale state
 
-  function logCare(plantName, type, extra="", customDate=null) {
+  function logCare(plantName, type, extra="") {
     setPlants(prev => {
       let n;
       if (type === "__override__") {
@@ -1096,20 +1166,18 @@ export default function App() {
         // silent
       } else {
         const p = prev[plantName];
-        const newLog = {
+        const clearTypes = type==="flush" ? [type,"water"] : [type];
+        const newDeferred = {...(p.deferred||{})};
+        clearTypes.forEach(t=>{ newDeferred[t]=null; });
+        const logEntry = {
           type,
-          date: customDate || new Date().toISOString(),
-          ...(typeof extra==="object" && extra!==null
-            ? { note: extra.note||"", product: extra.product||"", nextDate: extra.nextDate||"" }
-            : { note: typeof extra==="string" ? extra : "" }
-          )
+          date: new Date().toISOString(),
+          note: typeof extra === "string" ? extra : (extra?.note || ""),
         };
-        // Logging a flush clears both water and flush deferrals — it IS a watering session
-        const clearTypes = type === "flush" ? [type, "water"] : [type];
-        const newDeferred = { ...(p.deferred||{}) };
-        clearTypes.forEach(t => { newDeferred[t] = null; });
+        if (extra?.early) logEntry.early = true;
+        if (type === "pest" && typeof extra === "object") logEntry.pestData = extra;
         n = { ...prev, [plantName]: { ...p,
-          logs: [...(p.logs||[]), newLog],
+          logs: [...(p.logs||[]), logEntry],
           deferred: newDeferred,
         }};
         showToast(`${CARE[type].icon} ${CARE[type].label} logged`);
@@ -1120,26 +1188,14 @@ export default function App() {
   }
 
   function deferTask(task, days=1) {
-    const until = new Date();
-    until.setDate(until.getDate() + days);
-    const untilStr = until.toISOString();
+    const until = new Date(); until.setDate(until.getDate()+days);
     setPlants(prev => {
       const p = prev[task.plant];
       const logs = [...(p.logs||[])];
-      // Stamp wetDays on last relevant log for learning
-      const searchTypes = (task.type === "water" || task.type === "flush")
-        ? ["water","flush"] : [task.type];
-      let lastIdx = -1;
-      logs.forEach((l,i) => { if (searchTypes.includes(l.type)) lastIdx = i; });
-      if (lastIdx !== -1) {
-        logs[lastIdx] = { ...logs[lastIdx], wetDays: (logs[lastIdx].wetDays||0)+days };
-      }
-      // Use deferred flag — simple and reliable
-      const newDeferred = { ...(p.deferred||{}), [task.type]: untilStr };
-      // Water and flush share a session — defer both together
-      if (task.type === "water") newDeferred["flush"] = untilStr;
-      if (task.type === "flush") newDeferred["water"] = untilStr;
-      return { ...prev, [task.plant]: { ...p, logs, deferred: newDeferred } };
+      const lastIdx = logs.map(l=>l.type).lastIndexOf(task.type);
+      if (lastIdx !== -1) logs[lastIdx] = { ...logs[lastIdx], wetDays: (logs[lastIdx].wetDays||0)+days };
+      const n = { ...prev, [task.plant]: { ...p, logs, deferred: { ...(p.deferred||{}), [task.type]: until.toISOString() } } };
+      return n;
     });
     showToast(`${task.plant} — checking back in ${days} day${days>1?"s":""} · schedule updated`);
   }
@@ -1183,41 +1239,8 @@ export default function App() {
     showToast(`📍 Location saved for ${name}`);
   }
 
-  function deleteLog(plantName, logIndex) {
-    setPlants(prev => {
-      const p = prev[plantName];
-      const logs = [...(p.logs||[])];
-      logs.splice(logIndex, 1);
-      return { ...prev, [plantName]: { ...p, logs } };
-    });
-    showToast("Log entry removed");
-  }
-
-  function addPhoto(plantName, dataUrl, targetSize=800) {
-    // Compress image before storing to keep storage manageable
-    const canvas = document.createElement("canvas");
-    const img = new Image();
-    img.onload = () => {
-      const ratio = Math.min(targetSize/img.width, targetSize/img.height, 1);
-      canvas.width  = Math.round(img.width  * ratio);
-      canvas.height = Math.round(img.height * ratio);
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      const compressed = canvas.toDataURL("image/jpeg", 0.75);
-      setPlants(prev => {
-        const p = prev[plantName];
-        const photos = [...(p.photos||[]), { date: new Date().toISOString(), dataUrl: compressed }];
-        // Keep only last 5 photos per plant (~5 × ~150KB = ~750KB per plant max)
-        if (photos.length > 5) photos.splice(0, photos.length - 5);
-        return { ...prev, [plantName]: { ...p, photos } };
-      });
-      showToast("📸 Photo saved");
-    };
-    img.src = dataUrl;
-  }
-
   function exportData() {
-    const payload = { plants, exportedAt: new Date().toISOString(), version: "stable" };
+    const payload = { plants, chat: chatMsgs.slice(-40), exportedAt: new Date().toISOString(), version: "stable" };
     const blob = new Blob([JSON.stringify(payload, null, 2)], {type:"application/json"});
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1237,8 +1260,9 @@ export default function App() {
         const imported = data.plants || data; // support both wrapped and bare formats
         if (typeof imported !== "object" || Array.isArray(imported)) throw new Error("Invalid format");
         setPlants(imported);
-          localStorage.setItem("hoya-plants-stable", JSON.stringify({ plants: imported, savedAt: new Date().toISOString() }));
-        persist(imported, []);
+        if (data.chat) setChatMsgs(data.chat);
+        localStorage.setItem("hoya-plants-stable", JSON.stringify({ plants: imported, savedAt: new Date().toISOString() }));
+        persist(imported, data.chat || chatMsgs);
         showToast(`✅ Imported ${Object.keys(imported).length} plants`);
       } catch { showToast("⚠️ Couldn't read that file — is it a valid backup?"); }
     };
@@ -1246,6 +1270,37 @@ export default function App() {
     setShowDataMenu(false);
   }
 
+  async function sendChat(msg){
+    if(!msg.trim()||chatLoading) return;
+    setChatLoading(true);
+    const userMsg={role:"user",content:msg};
+    const next=[...chatMsgs,userMsg];
+    setChatMsgs(next); setChatInput("");
+    const ctx=tasks.filter(t=>t.overdue||t.due).slice(0,20)
+      .map(t=>{
+        const p=plants[t.plant]||{};
+        const meta=[];
+        if(p.location) meta.push(p.location);
+        if(p.potMaterial) meta.push(p.potMaterial);
+        if(p.potSize) meta.push(`${p.potSize}"`);
+        if(p.soilPreset) meta.push(`${p.soilPreset} mix`);
+        return `${t.plant}${meta.length?` (${meta.join(", ")})`:""}: ${CARE[t.type].label} (${t.age!==null?`${t.age}d since last`:"never logged"})`;
+      }).join("\n");
+    const sys=SYSTEM_PROMPT+(ctx?`\n\nCurrently due/overdue:\n${ctx}`:"");
+    try {
+      const res=await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:sys,
+          messages:next.map(m=>({role:m.role,content:m.content}))})
+      });
+      const data=await res.json();
+      const reply=data.content?.map(b=>b.text||"").join("")||"No response.";
+      const final=[...next,{role:"assistant",content:reply}];
+      setChatMsgs(final);
+      try { localStorage.setItem("hoya-chat-stable", JSON.stringify(final.slice(-40))); persist(plants||{}, final.slice(-40)); } catch {}
+    } catch { setChatMsgs([...next,{role:"assistant",content:"Connection error — try again."}]); }
+    setChatLoading(false);
+  }
 
   if(!plants) return (
     <div style={{minHeight:"100vh",background:BG,display:"flex",alignItems:"center",justifyContent:"center",color:SAGE_D,fontFamily:SERIF,fontSize:15}}>
@@ -1253,58 +1308,63 @@ export default function App() {
     </div>
   );
 
-  const overdueCt=tasks.filter(t=>t.overdue).length;
-  const dueCt=tasks.filter(t=>t.due&&!t.overdue).length;
-  const upcomingCt=tasks.filter(t=>t.upcoming||t.neverLogged).length;
+  const overduePlants=new Set(tasks.filter(t=>t.overdue).map(t=>t.plant));
+  const overdueCt=overduePlants.size;
+  const dueCt=new Set(tasks.filter(t=>t.due&&!t.overdue&&!overduePlants.has(t.plant)).map(t=>t.plant)).size;
+  const upcomingCt=new Set(tasks.filter(t=>!t.due&&!t.overdue&&t.upcoming).map(t=>t.plant)).size;
+  const allLocations=[...new Set(Object.values(plants).map(p=>p.location).filter(Boolean))].sort();
 
+  // Group flat task list by plant name, preserving sort order of first occurrence
   const groupByPlant = (taskList) => {
-    const map={}, order=[];
-    taskList.forEach(t=>{ if(!map[t.plant]){map[t.plant]=[];order.push(t.plant);} map[t.plant].push(t); });
-    return order.map(name=>({name,tasks:map[name]}));
-  };
-
-  const groupByLocation = (plantGroups) => {
-    const locMap={}, locOrder=[];
-    plantGroups.forEach(g=>{
-      const key=plants[g.name]?.location||"No location set";
-      if(!locMap[key]){locMap[key]=[];locOrder.push(key);}
-      locMap[key].push(g);
+    const map = {};
+    const order = [];
+    taskList.forEach(t => {
+      if (!map[t.plant]) { map[t.plant] = []; order.push(t.plant); }
+      map[t.plant].push(t);
     });
-    return locOrder.map(loc=>({loc,groups:locMap[loc]}));
+    return order.map(name => ({ name, tasks: map[name] }));
   };
 
   const PlantSection = ({color,label,taskList}) => {
     const groups = groupByPlant(taskList);
     if (!groups.length) return null;
-    const isMain = label.includes("Overdue")||label.includes("Due");
-    const renderCards = (grps) => grps.map(({name,tasks:grpTasks})=>(
-      <PlantTaskCard key={name} plantName={name} tasks={grpTasks}
-        onDone={t=>setLogModal({plant:t.plant,type:t.type})}
-        onDefer={(t,d)=>deferTask(t,d)}
-        onOpenPlant={n=>setDetailPlant(n)}
-      />
-    ));
+    // Group by location: named locations sorted A–Z, "No location" at end
+    const locationMap = {};
+    groups.forEach(({name, tasks: grpTasks}) => {
+      const loc = plants[name]?.location || "";
+      if (!locationMap[loc]) locationMap[loc] = [];
+      locationMap[loc].push({name, tasks: grpTasks});
+    });
+    const sortedLocs = Object.keys(locationMap).sort((a,b) => {
+      if (!a) return 1; if (!b) return -1;
+      return a.localeCompare(b);
+    });
+    const showLocHeaders = sortedLocs.length > 1;
     return (
       <section style={{marginBottom:20}}>
-        <div style={{fontSize:10,color,textTransform:"uppercase",letterSpacing:1.8,marginBottom:9,fontWeight:600,fontFamily:SERIF,fontStyle:"italic",display:"flex",alignItems:"center",gap:8}}>
-          <span>{label} · {groups.length} plant{groups.length!==1?"s":""}</span>
-          {isMain&&<button onClick={()=>setGroupByLoc(v=>!v)} style={{fontSize:9,color:groupByLoc?color:MUTED,background:groupByLoc?`${color}15`:"transparent",border:`1px solid ${groupByLoc?color:BORDER}`,borderRadius:10,padding:"1px 7px",fontFamily:FONT,cursor:"pointer"}}>
-            📍 {groupByLoc?"grouped by room":"group by room"}
-          </button>}
-        </div>
-        {groupByLoc&&isMain ? (
-          <div style={{display:"flex",flexDirection:"column",gap:10}}>
-            {groupByLocation(groups).map(({loc,groups:lg})=>(
-              <CollapsibleRoom key={loc} loc={loc} groups={lg} renderCards={renderCards}/>
-            ))}
+        <div style={{fontSize:12,color,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>{label} · {groups.length} plant{groups.length!==1?"s":""}</div>
+        {sortedLocs.map(loc => (
+          <div key={loc||"__none__"} style={{marginBottom: showLocHeaders ? 10 : 0}}>
+            {showLocHeaders && (
+              <div style={{fontSize:11,color:MUTED,marginBottom:6,paddingLeft:2,fontStyle:"italic",letterSpacing:0.3}}>
+                {loc ? `📍 ${loc}` : "No location set"}
+              </div>
+            )}
+            <div style={{display:"flex",flexDirection:"column",gap:7}}>
+              {locationMap[loc].map(({name,tasks:grpTasks})=>(
+                <PlantTaskCard key={name} plantName={name} tasks={grpTasks}
+                  location={plants[name]?.location||""}
+                  onDone={t=>setLogModal({plant:t.plant,type:t.type})}
+                  onDefer={(t,d)=>deferTask(t,d)}
+                  onOpenPlant={name=>{setDetailPlant(name);}}
+                />
+              ))}
+            </div>
           </div>
-        ) : (
-          <div style={{display:"flex",flexDirection:"column",gap:7}}>{renderCards(groups)}</div>
-        )}
+        ))}
       </section>
     );
   };
-
 
   return (
     <div style={{minHeight:"100vh",background:BG,color:INK,fontFamily:FONT,paddingBottom:84}} onClick={()=>setShowDataMenu(false)}>
@@ -1332,12 +1392,7 @@ export default function App() {
               {driveStatus==="syncing"       && <span style={{color:"#a09060",fontSize:9.5,animation:"pulse 1.4s infinite"}}>☁️ saving…</span>}
               {driveStatus==="saved"         && <span style={{color:"#8abd80",fontSize:9.5}}>☁️ Drive synced</span>}
               {driveStatus==="error"         && <span style={{color:"#e07050",fontSize:9.5}} title="Drive error — data saved locally">⚠️ local only</span>}
-              {(driveStatus==="disconnected"||driveStatus==="error") && (
-                <button onClick={connectDrive} style={{fontSize:10,color:"#fff",background:TERRA,border:"none",borderRadius:10,padding:"3px 12px",fontFamily:FONT,cursor:"pointer",fontWeight:600}}>
-                  ☁️ Reconnect Drive
-                </button>
-              )}
-              {driveStatus==="idle" && !driveAuthed && (
+              {(driveStatus==="disconnected"||driveStatus==="idle") && !driveAuthed && (
                 <button onClick={connectDrive} style={{fontSize:10,color:"#fff",background:TERRA,border:"none",borderRadius:10,padding:"3px 12px",fontFamily:FONT,cursor:"pointer",fontWeight:600}}>
                   ☁️ Connect Drive
                 </button>
@@ -1345,17 +1400,17 @@ export default function App() {
             </div>
           </div>
           <div style={{display:"flex",gap:5,flexWrap:"wrap",justifyContent:"flex-end",marginTop:2}}>
-            {overdueCt>0  && <span style={{background:`${TERRA}18`,color:TERRA,border:`1px solid ${TERRA}50`,borderRadius:20,padding:"3px 10px",fontSize:10,fontWeight:700}}>{overdueCt} overdue</span>}
-            {dueCt>0      && <span style={{background:`${CLAY}22`,color:TERRA,border:`1px solid ${CLAY}60`,borderRadius:20,padding:"3px 10px",fontSize:10,fontWeight:700}}>{dueCt} due today</span>}
-            {doneTasks.length>0 && <span style={{background:`${SAGE}15`,color:SAGE_D,border:`1px solid ${SAGE}40`,borderRadius:20,padding:"3px 10px",fontSize:10,fontWeight:700}}>{doneTasks.length} done ✓</span>}
-            {overdueCt===0&&dueCt===0&&doneTasks.length===0 && <span style={{background:`${SAGE}12`,color:SAGE_D,border:`1px solid ${SAGE}30`,borderRadius:20,padding:"3px 10px",fontSize:10,fontWeight:600}}>all clear ✓</span>}
+            {overdueCt>0  && <span style={{background:`${TERRA}18`,color:TERRA,border:`1px solid ${TERRA}50`,borderRadius:20,padding:"4px 11px",fontSize:12,fontWeight:700}}>{overdueCt} overdue</span>}
+            {dueCt>0      && <span style={{background:`${CLAY}22`,color:TERRA,border:`1px solid ${CLAY}60`,borderRadius:20,padding:"4px 11px",fontSize:12,fontWeight:700}}>{dueCt} due today</span>}
+            {doneTasks.length>0 && <span style={{background:`${SAGE}15`,color:SAGE_D,border:`1px solid ${SAGE}40`,borderRadius:20,padding:"4px 11px",fontSize:12,fontWeight:700}}>{doneTasks.length} done ✓</span>}
+            {overdueCt===0&&dueCt===0&&doneTasks.length===0 && <span style={{background:`${SAGE}12`,color:SAGE_D,border:`1px solid ${SAGE}30`,borderRadius:20,padding:"4px 11px",fontSize:12,fontWeight:600}}>all clear ✓</span>}
           </div>
         </div>
         <div style={{display:"flex",gap:5,alignItems:"center",justifyContent:"space-between"}}>
           <div style={{display:"flex",gap:5}}>
             {[["today","Today"],["all","All Plants"]].map(([v,l])=>(
               <button key={v} onClick={()=>setView(v)} style={{
-                padding:"6px 15px",borderRadius:20,fontSize:12,
+                padding:"7px 16px",borderRadius:20,fontSize:14,
                 background:view===v?"rgba(196,137,90,0.2)":"transparent",
                 color:view===v?"#fff":MUTED,
                 border:`1px solid ${view===v?"rgba(196,137,90,0.38)":BORDER}`,
@@ -1388,7 +1443,7 @@ export default function App() {
       {/* TODAY */}
       {view==="today" && (
         <div style={{padding:"16px 16px 0"}}>
-          {(driveStatus === "disconnected" || driveStatus === "error") && (
+          {!driveAuthed && driveStatus !== "connecting" && (
             <div style={{background:`${TERRA}10`,border:`1px solid ${TERRA}30`,borderRadius:12,padding:"14px 16px",marginBottom:16,display:"flex",alignItems:"center",gap:12}}>
               <span style={{fontSize:24}}>☁️</span>
               <div style={{flex:1}}>
@@ -1407,19 +1462,20 @@ export default function App() {
               <div style={{fontSize:13,color:MUTED,lineHeight:1.8,fontStyle:"italic"}}>Nothing due or overdue today.<br/>Enjoy your plants.</div>
             </div>
           ):<>
-            <PlantSection color="#f09070" label="⚠ Overdue"  taskList={tasks.filter(t=>t.overdue)} />
-            <PlantSection color="#d4b060" label="Due Today"   taskList={tasks.filter(t=>t.due&&!t.overdue)} />
-            <PlantSection color="#a09070" label="Coming Up"   taskList={tasks.filter(t=>t.upcoming||t.neverLogged)} />
+            <PlantSection color="#f09070" label="⚠ Overdue"     taskList={tasks.filter(t=>t.overdue)} />
+            <PlantSection color="#d4b060" label="Due Today"      taskList={tasks.filter(t=>t.due&&!t.overdue)} />
+            <PlantSection color="#c4a060" label="Due Tomorrow"   taskList={tasks.filter(t=>!t.due&&!t.overdue&&t.daysUntilDue===1)} />
+            <PlantSection color="#a09070" label="Coming Up"      taskList={tasks.filter(t=>!t.due&&!t.overdue&&t.upcoming&&t.daysUntilDue!==1)} />
             {doneTasks.length>0&&(
               <section style={{marginBottom:20}}>
-                <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>Done Today ✓</div>
+                <div style={{fontSize:12,color:MUTED,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>Done Today ✓</div>
                 <div style={{display:"flex",flexDirection:"column",gap:5}}>
                   {groupByPlant(doneTasks).map(({name,tasks:grp})=>(
                     <div key={name} style={{background:CARD,border:`1px solid ${SAGE}25`,borderLeft:`3px solid ${SAGE}60`,borderRadius:11,padding:"9px 14px",opacity:0.7,boxShadow:"0 1px 4px rgba(61,53,48,0.05)"}}>
-                      <div style={{fontSize:13,color:INK,fontWeight:600,marginBottom:4,fontFamily:SERIF}}>{name}</div>
+                      <div style={{fontSize:15,color:INK,fontWeight:600,marginBottom:4,fontFamily:SERIF}}>{name}</div>
                       <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
                         {grp.map(t=>(
-                          <span key={t.type} style={{fontSize:10.5,color:SAGE_D,background:`${SAGE}15`,borderRadius:20,padding:"2px 9px"}}>
+                          <span key={t.type} style={{fontSize:12,color:SAGE_D,background:`${SAGE}15`,borderRadius:20,padding:"3px 10px"}}>
                             {CARE[t.type]?.icon} {CARE[t.type]?.label} ✓
                           </span>
                         ))}
@@ -1431,19 +1487,19 @@ export default function App() {
             )}
             {deferredTasks.length>0&&(
               <section style={{marginBottom:20}}>
-                <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>Deferred</div>
+                <div style={{fontSize:12,color:MUTED,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>Deferred</div>
                 <div style={{display:"flex",flexDirection:"column",gap:5}}>
                   {groupByPlant(deferredTasks).map(({name,tasks:grp})=>(
                     <div key={name} style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:11,padding:"9px 14px",boxShadow:"0 1px 4px rgba(61,53,48,0.05)"}}>
-                      <div style={{fontSize:13,color:INK,fontWeight:600,marginBottom:5,fontFamily:SERIF}}>{name}</div>
+                      <div style={{fontSize:15,color:INK,fontWeight:600,marginBottom:5,fontFamily:SERIF}}>{name}</div>
                       <div style={{display:"flex",flexDirection:"column",gap:4}}>
                         {grp.map(t=>{
                           const def=plants[t.plant]?.deferred?.[t.type];
                           return (
                             <div key={t.type} style={{display:"flex",alignItems:"center",gap:8}}>
-                              <span style={{fontSize:13}}>{CARE[t.type]?.icon}</span>
-                              <span style={{fontSize:11,color:MUTED,flex:1}}>{CARE[t.type]?.label} · back {fmtDate(def)}</span>
-                              <button onClick={()=>setLogModal({plant:t.plant,type:t.type})} style={{background:`${TERRA}15`,border:`1px solid ${TERRA}40`,borderRadius:20,padding:"3px 9px",fontSize:10,color:TERRA,fontFamily:FONT,fontWeight:600}}>do it now</button>
+                              <span style={{fontSize:15}}>{CARE[t.type]?.icon}</span>
+                              <span style={{fontSize:13,color:MUTED,flex:1}}>{CARE[t.type]?.label} · back {fmtDate(def)}</span>
+                              <button onClick={()=>setLogModal({plant:t.plant,type:t.type})} style={{background:`${TERRA}15`,border:`1px solid ${TERRA}40`,borderRadius:20,padding:"4px 11px",fontSize:12,color:TERRA,fontFamily:FONT,fontWeight:600}}>do it now</button>
                             </div>
                           );
                         })}
@@ -1460,7 +1516,7 @@ export default function App() {
       {/* ALL PLANTS */}
       {view==="all" && (
         <div style={{padding:16}}>
-          <div style={{display:"flex",gap:8,marginBottom:14}}>
+          <div style={{display:"flex",gap:8,marginBottom:10}}>
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search your collection…"
               style={{flex:1,background:CARD,border:`1px solid ${BORDER}`,borderRadius:20,padding:"9px 16px",color:INK,fontFamily:FONT,fontSize:12.5}}
             />
@@ -1468,16 +1524,21 @@ export default function App() {
               + Add plant
             </button>
           </div>
-          {/* Location filter */}
-          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
-            <button onClick={()=>setFilterLoc("")} style={{fontSize:11,padding:"4px 12px",borderRadius:20,fontFamily:FONT,cursor:"pointer",background:filterLoc===""?SAGE:SURF,color:filterLoc===""?"#fff":MUTED,border:`1px solid ${filterLoc===""?SAGE_D:BORDER}`}}>All</button>
-            {[...new Set(Object.values(plants).map(p=>p.location||"").filter(Boolean))].sort().map(loc=>(
-              <button key={loc} onClick={()=>setFilterLoc(l=>l===loc?"":loc)} style={{fontSize:11,padding:"4px 12px",borderRadius:20,fontFamily:FONT,cursor:"pointer",background:filterLoc===loc?TERRA:SURF,color:filterLoc===loc?"#fff":MUTED,border:`1px solid ${filterLoc===loc?TERRA:BORDER}`}}>📍 {loc}</button>
-            ))}
-          </div>
+          {allLocations.length>0&&(
+            <div style={{marginBottom:10}}>
+              <select value={locFilter} onChange={e=>setLocFilter(e.target.value)}
+                style={{width:"100%",background:CARD,border:`1px solid ${locFilter?SAGE:BORDER}`,borderRadius:12,padding:"8px 14px",
+                  color:locFilter?INK:MUTED,fontFamily:FONT,fontSize:12,appearance:"none",
+                  backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%239e9080' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E")`,
+                  backgroundRepeat:"no-repeat",backgroundPosition:"right 14px center",paddingRight:34}}>
+                <option value="">📍 All locations</option>
+                {allLocations.map(l=><option key={l} value={l}>📍 {l}</option>)}
+              </select>
+            </div>
+          )}
           <div style={{display:"flex",gap:10,marginBottom:12,fontSize:10.5,color:MUTED,alignItems:"center"}}>
             <span>status: </span>
-            {[["#8abd80","ok"],["#d4a040","soon"],["#e07050","due/overdue"]].map(([col,lbl])=>(
+            {[["#8abd80","ok"],["#d4a040","soon"],["#e07050","overdue"]].map(([col,lbl])=>(
               <span key={lbl} style={{display:"flex",alignItems:"center",gap:4}}>
                 <span style={{width:7,height:7,borderRadius:"50%",background:col,display:"inline-block"}}/>
                 {lbl}
@@ -1485,16 +1546,7 @@ export default function App() {
             ))}
           </div>
           <div style={{display:"flex",flexDirection:"column",gap:4}}>
-            {Object.keys(plants)
-            .filter(n=>{
-              if(search && !n.toLowerCase().includes(search.toLowerCase())) return false;
-              if(filterLoc && (plants[n]?.location||"") !== filterLoc) return false;
-              return true;
-            })
-            .sort((a,b)=>{
-              const la=plants[a]?.location||"zzz", lb=plants[b]?.location||"zzz";
-              return la===lb?a.localeCompare(b):la.localeCompare(lb);
-            }).map(name=>{
+            {Object.keys(plants).filter(n=>(!search||n.toLowerCase().includes(search.toLowerCase()))&&(!locFilter||plants[n].location===locFilter)).sort().map(name=>{
               const p=plants[name];
               const dot=type=>{
                 const eff=effectiveInterval(p,type);
@@ -1505,11 +1557,6 @@ export default function App() {
               const lc=(p.logs||[]).length;
               return (
                 <div key={name} onClick={()=>setDetailPlant(name)} style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:12,padding:"11px 15px",cursor:"pointer",display:"flex",alignItems:"center",gap:12,transition:"all .15s",boxShadow:"0 1px 4px rgba(61,53,48,0.05)"}}>
-                  {p.photos?.slice(-1)[0] && (
-                    <img src={p.photos.slice(-1)[0].dataUrl} alt={name}
-                      style={{width:40,height:40,objectFit:"cover",borderRadius:8,border:`1px solid ${BORDER}`,flexShrink:0}}
-                    />
-                  )}
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:13,color:INK,fontWeight:500,fontFamily:SERIF,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{name}</div>
                     {p.location&&<div style={{fontSize:10,color:SAGE_D,marginTop:2}}>📍 {p.location}</div>}
@@ -1524,29 +1571,20 @@ export default function App() {
         </div>
       )}
 
-      {/* CHAT */}
-
       {/* FAB */}
-      {view!=="chat"&&(
-        <button onClick={()=>setAddModal(true)} style={{position:"fixed",bottom:22,right:20,width:52,height:52,borderRadius:"50%",background:SAGE,border:`1.5px solid ${SAGE_D}`,fontSize:22,boxShadow:"0 4px 20px rgba(90,107,80,0.35)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",zIndex:40}} title="Add plant">＋</button>
-      )}
+      <button onClick={()=>setAddModal(true)} style={{position:"fixed",bottom:22,right:20,width:52,height:52,borderRadius:"50%",background:SAGE,border:`1.5px solid ${SAGE_D}`,fontSize:22,boxShadow:"0 4px 20px rgba(90,107,80,0.35)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",zIndex:40}} title="Add plant">＋</button>
+
 
       {detailPlant&&plants[detailPlant]&&(
         <PlantSheet name={detailPlant} plant={plants[detailPlant]}
           onLog={(name,type,extra)=>{
             if(type==="__override__"||type==="__meta__"){
-              logCare(name,type,extra);          // silent saves, stay on sheet
+              logCare(name,type,extra);
             } else {
-              setLogModal({plant:name,type}); // modal opens on top, sheet stays open
+              setLogModal({plant:name,type});
             }
           }}
-          onClose={()=>setDetailPlant(null)}
-          onDelete={deletePlant}
-          onSetLocation={setPlantLocation}
-          onRename={renamePlant}
-          onDeleteLog={deleteLog}
-          onAddPhoto={addPhoto}
-          onDefer={(task,days)=>deferTask(task,days)}
+          onClose={()=>setDetailPlant(null)} onDelete={deletePlant} onSetLocation={setPlantLocation} onRename={renamePlant}
         />
       )}
       {logModal&&<LogModal plant={logModal.plant} type={logModal.type} onLog={logCare} onClose={()=>setLogModal(null)}/>}

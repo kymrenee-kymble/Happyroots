@@ -398,6 +398,10 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename}){
     setEditingName(false);
   };
 
+  const handleNameBlur = () => {
+    submitRename();
+  };
+
   const intervals = Object.entries(CARE).map(([type,c])=>{
     const key=type+"Days";
     const defs={waterDays:7,flushDays:30,topdressDays:30,foliarDays:14};
@@ -422,6 +426,7 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename}){
             ) : (
               <div style={{display:"flex",gap:7,alignItems:"center"}}>
                 <input ref={nameRef} value={nameDraft} onChange={e=>setNameDraft(e.target.value)}
+                  onBlur={handleNameBlur}
                   onKeyDown={e=>{ if(e.key==="Enter")submitRename(); if(e.key==="Escape")setEditingName(false); }}
                   style={{flex:1,background:SURF,border:`1px solid ${SAGE}`,borderRadius:7,padding:"6px 10px",color:INK,fontFamily:SERIF,fontSize:16,fontWeight:500}}
                 />
@@ -447,6 +452,7 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename}){
               ) : (
                 <div style={{display:"flex",gap:7,alignItems:"center"}}>
                   <input ref={locRef} value={locDraft} onChange={e=>setLocDraft(e.target.value)}
+                    onBlur={()=>{onSetLocation(name,locDraft);setEditingLoc(false);}}
                     onKeyDown={e=>{ if(e.key==="Enter"){onSetLocation(name,locDraft);setEditingLoc(false);} if(e.key==="Escape")setEditingLoc(false); }}
                     placeholder="e.g. Shelf A, Prop box, South window"
                     style={{flex:1,background:SURF,border:`1px solid ${SAGE}`,borderRadius:7,padding:"6px 10px",color:INK,fontFamily:FONT,fontSize:12}}
@@ -884,6 +890,19 @@ function readLocalSavedAt() {
   return null;
 }
 
+// Find the most recent log date across all plants in a dataset.
+// Used to compare local vs Drive — whichever has a more recent actual log entry wins.
+// This is more reliable than savedAt timestamps which can be wrong if a save failed.
+function mostRecentLogDate(plants) {
+  let latest = null;
+  Object.values(plants || {}).forEach(p => {
+    (p.logs || []).forEach(l => {
+      if (!latest || new Date(l.date) > new Date(latest)) latest = l.date;
+    });
+  });
+  return latest;
+}
+
 export default function App() {
   const [plants,setPlants]           = useState(null);
   const [view,setView]               = useState("today");
@@ -993,13 +1012,17 @@ export default function App() {
       try {
         const driveData = await driveReadFile();
         if (driveData?.plants) {
-          const localSavedAt = readLocalSavedAt();
-          const driveIsNewer = !localSavedAt || new Date(driveData.savedAt || 0) >= new Date(localSavedAt);
+          const localRaw = localStorage.getItem("hoya-plants-stable");
+          const localPlants = localRaw ? JSON.parse(localRaw)?.plants : null;
+          const driveLatest = mostRecentLogDate(driveData.plants);
+          const localLatest = mostRecentLogDate(localPlants);
+          const driveIsNewer = !localLatest || (driveLatest && new Date(driveLatest) > new Date(localLatest));
+          console.log("Sync check — Drive latest log: " + driveLatest + " | Local latest log: " + localLatest + " | Drive wins: " + driveIsNewer);
           if (driveIsNewer) {
             setPlants(migratePlants(driveData.plants));
             if (driveData.chat) setChatMsgs(driveData.chat);
             try { localStorage.setItem("hr-session", JSON.stringify({ plants: driveData.plants, savedAt: driveData.savedAt })); } catch {}
-            console.log("✓ Drive loaded " + Object.keys(driveData.plants).length + " plants (Drive is newer)");
+            console.log("✓ Drive loaded " + Object.keys(driveData.plants).length + " plants (Drive has newer logs)");
             showToast("☁️ Loaded from Google Drive");
           } else {
             // Local has newer data (Drive saves failed while token was expired)
@@ -1046,11 +1069,15 @@ export default function App() {
       console.log("loading from Drive...");
       const driveData = await driveReadFile();
       if (driveData?.plants) {
-        const localSavedAt = readLocalSavedAt();
-        const driveIsNewer = !localSavedAt || new Date(driveData.savedAt || 0) >= new Date(localSavedAt);
+        const localRaw = localStorage.getItem("hoya-plants-stable");
+        const localPlants2 = localRaw ? JSON.parse(localRaw)?.plants : null;
+        const driveLatest2 = mostRecentLogDate(driveData.plants);
+        const localLatest2 = mostRecentLogDate(localPlants2);
+        const driveIsNewer = !localLatest2 || (driveLatest2 && new Date(driveLatest2) > new Date(localLatest2));
+        console.log("connectDrive sync — Drive latest: " + driveLatest2 + " | Local latest: " + localLatest2 + " | Drive wins: " + driveIsNewer);
         if (driveIsNewer) {
           const count = Object.keys(driveData.plants).length;
-          console.log("✓ loaded " + count + " plants from Drive (Drive is newer)");
+          console.log("✓ loaded " + count + " plants from Drive (Drive has newer logs)");
           setPlants(migratePlants(driveData.plants));
           if (driveData.chat) setChatMsgs(driveData.chat);
           try { localStorage.setItem("hr-session", JSON.stringify({ plants: driveData.plants, savedAt: driveData.savedAt })); } catch {}
@@ -1088,10 +1115,10 @@ export default function App() {
     }
   }
 
-  // Debounced persist: local immediately, Drive 4s later
-  const persist = useCallback(async (p, chat) => {
+  // Persist: local immediately always. Drive: immediate for care logs, debounced 4s for metadata.
+  const persist = useCallback(async (p, chat, immediate = false) => {
     const KEY = "hoya-plants-stable"; // hardcoded — no closure dependency
-    console.log("persist called: " + (p ? Object.keys(p).length + " plants" : "NULL"));
+    console.log("persist called: " + (p ? Object.keys(p).length + " plants" : "NULL") + (immediate ? " (immediate)" : ""));
     if (!p || typeof p !== "object") { console.log("✗ persist: invalid data"); return; }
     const saved = { plants: p, savedAt: new Date().toISOString() };
     // ── Local save (synchronous localStorage) ────────────────────────────────
@@ -1110,14 +1137,14 @@ export default function App() {
     } catch(e) {
       console.log("✗ local save FAILED: " + String(e));
     }
-    // ── Drive save (debounced 4s) ────────────────────────────────────────────
+    // ── Drive save: immediate for care logs, debounced 4s for metadata ───────
     if (!driveAuthedRef.current) {
       console.log("Drive not authed — local only");
       return;
     }
     if (saveTimer.current) clearTimeout(saveTimer.current);
     setDriveStatus("syncing");
-    saveTimer.current = setTimeout(async () => {
+    const doDriveSave = async () => {
       try {
         await driveWriteFile({ plants: p, chat: (chat||[]).slice(-40), savedAt: saved.savedAt });
         setDriveStatus("saved");
@@ -1126,7 +1153,12 @@ export default function App() {
         console.log("✗ Drive save FAILED: " + e);
         setDriveStatus("error");
       }
-    }, 4000);
+    };
+    if (immediate) {
+      doDriveSave();
+    } else {
+      saveTimer.current = setTimeout(doDriveSave, 4000);
+    }
   }, []);
 
   useEffect(()=>{
@@ -1162,11 +1194,14 @@ export default function App() {
   // The isFirstLoad ref prevents saving the initial load back over itself.
   const sessionOrderRef = useRef(null); // stable plant order for today's session
   const isFirstLoad = useRef(true);
+  const immediateRef = useRef(false); // true when next save should go to Drive immediately
   useEffect(()=>{
     if(!plants) return;
     if(isFirstLoad.current){ isFirstLoad.current = false; return; }
-    console.log("plants changed → persist " + Object.keys(plants).length + " plants");
-    persist(plants, chatMsgs);
+    const immediate = immediateRef.current;
+    immediateRef.current = false; // reset after consuming
+    console.log("plants changed → persist " + Object.keys(plants).length + " plants" + (immediate ? " (immediate)" : ""));
+    persist(plants, chatMsgs, immediate);
   },[plants]);
 
   useEffect(()=>{ chatEnd.current?.scrollIntoView({behavior:"smooth"}); },[chatMsgs,chatLoading]);
@@ -1177,6 +1212,10 @@ export default function App() {
   // 3. Call persist with it directly — no closures, no setTimeout, no stale state
 
   function logCare(plantName, type, extra="") {
+    // Care logs save to Drive immediately; metadata/overrides use debounced save
+    if (type !== "__meta__" && type !== "__override__") {
+      immediateRef.current = true;
+    }
     setPlants(prev => {
       let n;
       if (type === "__override__") {

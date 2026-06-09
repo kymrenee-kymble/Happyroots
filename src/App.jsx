@@ -743,6 +743,7 @@ function LogModal({plant,type,onLog,onClose}){
                 style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:8,padding:"8px 11px",color:INK,fontFamily:FONT,fontSize:12,colorScheme:"dark"}}
               />
             </div>
+          </div>
         )}
         {/* Date picker */}
         <div style={{marginBottom:12}}>

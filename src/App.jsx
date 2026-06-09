@@ -56,7 +56,9 @@ const DEFAULT_SCHED = { waterDays:10, flushDays:30, topdressDays:30, foliarDays:
 // - recent log pairs weighted more heavily than old ones
 // - activates after 3+ logs; blends 70% learned / 30% default
 function learnedInterval(logs, type, defaultDays) {
-  const typed = (logs||[]).filter(l=>l.type===type).sort((a,b)=>new Date(a.date)-new Date(b.date));
+  // For water interval, include flush logs too (flush = a watering session)
+  const filterTypes = type === "water" ? ["water","flush"] : [type];
+  const typed = (logs||[]).filter(l=>filterTypes.includes(l.type)).sort((a,b)=>new Date(a.date)-new Date(b.date));
   if (typed.length < 3) return null;
   const pairs = [];
   for (let i=1; i<typed.length; i++) {

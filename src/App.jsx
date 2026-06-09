@@ -182,10 +182,10 @@ function buildTasks(plants) {
     const flushAge  = daysSince(flushLast); // days since last flush specifically
 
     const sessionLoggedToday = lastWaterSession && new Date(lastWaterSession).toDateString() === today;
-    // Deferred until X means "skip until after X" — compare date strings so today counts as still deferred
-    const todayDate = todayStr();
-    const waterDeferred = p.deferred?.["water"] && new Date(p.deferred["water"]).toDateString() >= todayDate;
-    const flushDeferred = p.deferred?.["flush"] && new Date(p.deferred["flush"]).toDateString() >= todayDate;
+    // Compare ISO date strings (YYYY-MM-DD) — reliable chronological comparison
+    const todayISO = new Date().toISOString().slice(0,10);
+    const waterDeferred = p.deferred?.["water"] && p.deferred["water"].slice(0,10) >= todayISO;
+    const flushDeferred = p.deferred?.["flush"] && p.deferred["flush"].slice(0,10) >= todayISO;
 
     // Is a watering session due?
     const waterDue    = waterAge !== null && waterAge >= waterThreshold;
@@ -216,7 +216,7 @@ function buildTasks(plants) {
       const age  = daysSince(last);
       if (last && new Date(last).toDateString()===today) return;
       const def = p.deferred?.[type];
-      if (def && new Date(def).toDateString() >= todayStr()) return;
+      if (def && def.slice(0,10) >= new Date().toISOString().slice(0,10)) return;
       const overdue  = age!==null && age>threshold;
       const due      = age!==null && age>=threshold;
       const upcoming = !due && age!==null && age>=threshold*0.75;
@@ -1060,7 +1060,7 @@ export default function App() {
       const isDeferred = defTypes.some(dt => {
         const d = p.deferred?.[dt];
         // Deferred until X means still deferred ON X — compare date strings
-        return d && new Date(d).toDateString() >= today;
+        return d && d.slice(0,10) >= new Date().toISOString().slice(0,10);
       });
       if (isDeferred) { deferred.push(t); return; }
       // Check if logged today — use combined water+flush log for water/flush tasks

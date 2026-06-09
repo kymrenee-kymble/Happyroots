@@ -58,22 +58,17 @@ const DEFAULT_SCHED = { waterDays:10, flushDays:30, topdressDays:30, foliarDays:
 function learnedInterval(logs, type, defaultDays) {
   const typed = (logs||[]).filter(l=>l.type===type).sort((a,b)=>new Date(a.date)-new Date(b.date));
   if (typed.length < 3) return null;
-  const pairs = [];
+  const intervals = [];
   for (let i=1; i<typed.length; i++) {
     const d = Math.round((new Date(typed[i].date)-new Date(typed[i-1].date))/86400000);
-    if (d<=0 || d>120) continue;
-    const recency = 0.5 + (i / typed.length);         // 0.5–1.5, recent = higher
-    pairs.push({ val: d, weight: recency });
+    if (d > 0 && d < 120) intervals.push(d);
   }
-  if (pairs.length < 2) return null;
-  pairs.sort((a,b)=>a.val-b.val);
-  const totalW = pairs.reduce((s,x)=>s+x.weight, 0);
-  let cum = 0, median = pairs[0].val;
-  for (const {val,weight} of pairs) {
-    cum += weight;
-    if (cum >= totalW/2) { median = val; break; }
-  }
-  return Math.min(90, Math.max(3, Math.round(median*0.85 + defaultDays*0.15)));
+  if (intervals.length < 2) return null;
+  intervals.sort((a,b)=>a-b);
+  const median = intervals[Math.floor(intervals.length/2)];
+  // Blend: 70% learned, 30% default — cap between 3 and 90 days
+  const blended = Math.round(median * 0.7 + defaultDays * 0.3);
+  return Math.min(90, Math.max(3, blended));
 }
 
 function effectiveInterval(plant, type) {

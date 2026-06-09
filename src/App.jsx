@@ -216,7 +216,7 @@ function buildTasks(plants) {
     const waterSessionDeferred = (p.deferred?.water && daysSince(p.deferred.water) < 0) ||
                                   (p.deferred?.flush && daysSince(p.deferred.flush) < 0);
     const hasWaterOrFlushTask = !sessionLoggedToday && !waterSessionDeferred && (waterDue || flushDue) && lastWaterSession !== null;
-    if ((hasWaterOrFlushTask || sessionLoggedToday) && !waterSessionDeferred) {
+    if (hasWaterOrFlushTask) {
       const tdThreshold = effectiveInterval(p, "topdress");
       const tdLast = lastLogOf(p, "topdress");
       const tdBaseline = tdLast || p.addedDate || null;
@@ -345,15 +345,28 @@ function PlantTaskCard({plantName, location, tasks, onDone, onDefer, onOpenPlant
               </div>
               {wetFor===task.type&&(
                 <div style={{padding:"6px 14px 9px 46px",display:"flex",alignItems:"center",gap:7,flexWrap:"wrap",background:`${SURF}`}}>
-                  <span style={{fontSize:12,color:MUTED}}>Check back in:</span>
-                  {[1,2,3,5].map(d=>(
-                    <button key={d} onClick={()=>{onDefer(task,d);setWetFor(null);}}
-                      style={{background:"#fff",border:`1px solid ${BORDER}`,
-                        borderRadius:20,padding:"4px 12px",fontSize:13,color:SAGE_D,fontFamily:FONT,fontWeight:600}}>
-                      {d}d
-                    </button>
-                  ))}
-                  <span style={{fontSize:11,color:MUTED,fontStyle:"italic"}}>updates schedule</span>
+                  {task.type==="topdress" ? (
+                    <>
+                      <span style={{fontSize:12,color:MUTED}}>Defer until:</span>
+                      <button onClick={()=>{onDefer(task,"nextWater");setWetFor(null);}}
+                        style={{background:"#fff",border:`1px solid ${BORDER}`,
+                          borderRadius:20,padding:"4px 12px",fontSize:13,color:SAGE_D,fontFamily:FONT,fontWeight:600}}>
+                        next watering
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span style={{fontSize:12,color:MUTED}}>Check back in:</span>
+                      {[1,2,3,5].map(d=>(
+                        <button key={d} onClick={()=>{onDefer(task,d);setWetFor(null);}}
+                          style={{background:"#fff",border:`1px solid ${BORDER}`,
+                            borderRadius:20,padding:"4px 12px",fontSize:13,color:SAGE_D,fontFamily:FONT,fontWeight:600}}>
+                          {d}d
+                        </button>
+                      ))}
+                      <span style={{fontSize:11,color:MUTED,fontStyle:"italic"}}>updates schedule</span>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -1251,16 +1264,34 @@ export default function App() {
   }
 
   function deferTask(task, days=1) {
-    const until = new Date(); until.setDate(until.getDate()+days);
+    const isNextWater = days === "nextWater";
     setPlants(prev => {
       const p = prev[task.plant];
+      // For "next watering": calculate when water is next due based on interval
+      let until;
+      if (isNextWater) {
+        const waterInterval = effectiveInterval(p, "water");
+        const lastWater = lastLogOf(p, "water") || lastLogOf(p, "flush");
+        const daysSinceWater = lastWater ? daysSince(lastWater) : 0;
+        const daysUntilWater = Math.max(1, waterInterval - daysSinceWater);
+        until = new Date();
+        until.setDate(until.getDate() + daysUntilWater);
+      } else {
+        until = new Date();
+        until.setDate(until.getDate() + days);
+      }
       const logs = [...(p.logs||[])];
-      const lastIdx = logs.map(l=>l.type).lastIndexOf(task.type);
-      if (lastIdx !== -1) logs[lastIdx] = { ...logs[lastIdx], wetDays: (logs[lastIdx].wetDays||0)+days };
+      if (!isNextWater) {
+        const lastIdx = logs.map(l=>l.type).lastIndexOf(task.type);
+        if (lastIdx !== -1) logs[lastIdx] = { ...logs[lastIdx], wetDays: (logs[lastIdx].wetDays||0)+days };
+      }
       const n = { ...prev, [task.plant]: { ...p, logs, deferred: { ...(p.deferred||{}), [task.type]: until.toISOString() } } };
       return n;
     });
-    showToast(`${task.plant} — checking back in ${days} day${days>1?"s":""} · schedule updated`);
+    showToast(isNextWater
+      ? `${task.plant} — topdress deferred to next watering`
+      : `${task.plant} — checking back in ${days} day${days>1?"s":""} · schedule updated`
+    );
   }
 
   function addPlant(name) {

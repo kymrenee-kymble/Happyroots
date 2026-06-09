@@ -181,10 +181,11 @@ function buildTasks(plants) {
     const waterAge  = daysSince(lastWaterSession);
     const flushAge  = daysSince(flushLast); // days since last flush specifically
 
-    const now3 = new Date();
     const sessionLoggedToday = lastWaterSession && new Date(lastWaterSession).toDateString() === today;
-    const waterDeferred = p.deferred?.["water"] && new Date(p.deferred["water"]) > now3;
-    const flushDeferred = p.deferred?.["flush"] && new Date(p.deferred["flush"]) > now3;
+    // Deferred until X means "skip until after X" — compare date strings so today counts as still deferred
+    const todayDate = todayStr();
+    const waterDeferred = p.deferred?.["water"] && new Date(p.deferred["water"]).toDateString() >= todayDate;
+    const flushDeferred = p.deferred?.["flush"] && new Date(p.deferred["flush"]).toDateString() >= todayDate;
 
     // Is a watering session due?
     const waterDue    = waterAge !== null && waterAge >= waterThreshold;
@@ -215,7 +216,7 @@ function buildTasks(plants) {
       const age  = daysSince(last);
       if (last && new Date(last).toDateString()===today) return;
       const def = p.deferred?.[type];
-      if (def && new Date(def) > new Date()) return;
+      if (def && new Date(def).toDateString() >= todayStr()) return;
       const overdue  = age!==null && age>threshold;
       const due      = age!==null && age>=threshold;
       const upcoming = !due && age!==null && age>=threshold*0.75;
@@ -972,45 +973,6 @@ export default function App() {
       let local = localLoad();
       const localCount = local ? Object.keys(local).length : 0;
 
-      // ── One-time migration: convert old deferred flags to pushed log dates ──
-      if (local) {
-        let migrated = false;
-        const now = new Date();
-        Object.keys(local).forEach(name => {
-          const p = local[name];
-          if (!p.deferred) return;
-          Object.entries(p.deferred).forEach(([type, untilStr]) => {
-            if (!untilStr) return;
-            const until = new Date(untilStr);
-            if (until <= now) return; // already past — ignore
-            // Push the last log date forward so daysSince gives the right result
-            const logs = [...(p.logs||[])];
-            const lastIdx = logs.map(l=>l.type).lastIndexOf(type);
-            if (lastIdx !== -1) {
-              const lastLog = logs[lastIdx];
-              const lastDate = new Date(lastLog.date);
-              if (lastDate < until) {
-                // Push log date forward to the deferred-until date
-                logs[lastIdx] = { ...lastLog, date: until.toISOString(), wetDays: (lastLog.wetDays||0)+1 };
-                local[name] = { ...p, logs, deferred: { ...(p.deferred||{}), [type]: null } };
-                migrated = true;
-              }
-            } else {
-              // No log at all — create synthetic entry at the deferred date
-              const newLogs = [...logs, { type, date: until.toISOString(), note: "deferred", wetDays: 1, synthetic: true }];
-              local[name] = { ...p, logs: newLogs, deferred: { ...(p.deferred||{}), [type]: null } };
-              migrated = true;
-            }
-          });
-        });
-        if (migrated) {
-          console.log("Migrated old deferred flags to log dates");
-          // Save migrated data locally immediately
-          try { localStorage.setItem("happyroots-plants", JSON.stringify({ plants: local, savedAt: new Date().toISOString() })); } catch {}
-          try { localStorage.setItem("hr-session", JSON.stringify({ plants: local, savedAt: new Date().toISOString() })); } catch {}
-        }
-      }
-
       setPlants(local || initPlants());
       const token = getStoredToken();
       if (token) {
@@ -1097,7 +1059,8 @@ export default function App() {
       const defTypes = (t.type==="water"||t.type==="flush") ? ["water","flush"] : [t.type];
       const isDeferred = defTypes.some(dt => {
         const d = p.deferred?.[dt];
-        return d && new Date(d) > now;
+        // Deferred until X means still deferred ON X — compare date strings
+        return d && new Date(d).toDateString() >= today;
       });
       if (isDeferred) { deferred.push(t); return; }
       // Check if logged today — use combined water+flush log for water/flush tasks

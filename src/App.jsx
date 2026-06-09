@@ -184,8 +184,8 @@ function buildTasks(plants) {
     const sessionLoggedToday = lastWaterSession && new Date(lastWaterSession).toDateString() === today;
     // Compare ISO date strings (YYYY-MM-DD) — reliable chronological comparison
     const todayISO = new Date().toISOString().slice(0,10);
-    const waterDeferred = p.deferred?.["water"] && p.deferred["water"].slice(0,10) >= todayISO;
-    const flushDeferred = p.deferred?.["flush"] && p.deferred["flush"].slice(0,10) >= todayISO;
+    const waterDeferred = p.deferred?.["water"] && p.deferred["water"].slice(0,10) > todayISO;
+    const flushDeferred = p.deferred?.["flush"] && p.deferred["flush"].slice(0,10) > todayISO;
 
     // Is a watering session due?
     const waterDue    = waterAge !== null && waterAge >= waterThreshold;
@@ -216,7 +216,7 @@ function buildTasks(plants) {
       const age  = daysSince(last);
       if (last && new Date(last).toDateString()===today) return;
       const def = p.deferred?.[type];
-      if (def && def.slice(0,10) >= new Date().toISOString().slice(0,10)) return;
+      if (def && def.slice(0,10) > new Date().toISOString().slice(0,10)) return;
       const overdue  = age!==null && age>threshold;
       const due      = age!==null && age>=threshold;
       const upcoming = !due && age!==null && age>=threshold*0.75;
@@ -1060,7 +1060,7 @@ export default function App() {
       const isDeferred = defTypes.some(dt => {
         const d = p.deferred?.[dt];
         // Deferred until X means still deferred ON X — compare date strings
-        return d && d.slice(0,10) >= new Date().toISOString().slice(0,10);
+        return d && d.slice(0,10) > new Date().toISOString().slice(0,10);
       });
       if (isDeferred) { deferred.push(t); return; }
       // Check if logged today — use combined water+flush log for water/flush tasks

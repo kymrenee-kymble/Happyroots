@@ -183,11 +183,14 @@ function buildTasks(plants) {
       : (waterLast || flushLast);
     const waterAge  = daysSince(lastWaterSession);
     const flushAge  = daysSince(flushLast);
+    // For flush: if never flushed, use addedDate as baseline so new plants aren't immediately overdue
+    const flushBaseline = flushLast || p.addedDate || null;
+    const flushBaselineAge = daysSince(flushBaseline);
     const sessionLoggedToday = lastWaterSession && toPacific(new Date(lastWaterSession)).toDateString()===today;
     const waterDue      = waterAge!==null && waterAge>=waterThreshold;
     const waterUpcoming = !waterDue && waterAge!==null && waterAge>=waterThreshold*0.75;
-    const flushDue      = flushAge===null || flushAge>=flushThreshold;
-    const isWaterOverdue = waterDue && waterAge > waterThreshold;
+    const flushDue      = flushBaselineAge!==null && flushBaselineAge>=flushThreshold;
+    const isWaterOverdue = waterDue && (lastWaterSession === null || waterAge > waterThreshold);
     // buildTasks only decides WHAT task type to show based on schedule.
     // Deferral filtering (active vs deferred) is handled by the useEffect,
     // which checks p.deferred[t.type] — so flush deferred → flush stays deferred,
@@ -197,8 +200,9 @@ function buildTasks(plants) {
         tasks.push({ id:`${name}::water`, plant:name, type:"water", age:null, threshold:waterThreshold,
           last:null, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
       } else if (waterDue && flushDue) {
-        tasks.push({ id:`${name}::flush`, plant:name, type:"flush", age:waterAge, threshold:waterThreshold,
-          last:flushLast, overdue:isWaterOverdue, due:true, upcoming:false, neverLogged:false,
+        const isFlushOverdue = flushLast !== null && flushBaselineAge !== null && flushBaselineAge > flushThreshold;
+        tasks.push({ id:`${name}::flush`, plant:name, type:"flush", age:flushBaselineAge, threshold:flushThreshold,
+          last:flushLast, overdue:isFlushOverdue, due:true, upcoming:false, neverLogged:false,
           replacesWater:true, daysUntilDue:0 });
       } else if (waterDue || waterUpcoming) {
         tasks.push({ id:`${name}::water`, plant:name, type:"water", age:waterAge, threshold:waterThreshold,
@@ -461,7 +465,14 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename}){
               const age=daysSince(last);
               const eff=effectiveInterval(plant,type);
               const pct=age!==null?age/eff:null;
-              const col=pct===null?"#7a6a5a":pct>1?"#e07050":pct>=.75?"#c4a060":"#8abd80";
+              // Flush/water rotation awareness: if flush is due, water defers to flush
+              const flushBaseline = lastLogOf(plant,"flush") || plant.addedDate || null;
+              const flushBaselineAge = daysSince(flushBaseline);
+              const waterDueNow = (()=>{ const wa=daysSince(lastLogOf(plant,"water")||lastLogOf(plant,"flush")); return wa!==null&&wa>=eff; })();
+              const flushDueNow = flushBaselineAge!==null && flushBaselineAge>=30;
+              // If flush is due and this is the water button, show it as neutral (flush takes priority)
+              const suppressedByFlush = type==="water" && waterDueNow && flushDueNow;
+              const col = suppressedByFlush ? "#8abd80" : pct===null?"#7a6a5a":pct>1?"#e07050":pct>=.75?"#c4a060":"#8abd80";
               return (
                 <button key={type} onClick={()=>onLog(name,type)} style={{background:col==="#7a6a5a"?SURF:`${col}15`,border:`1px solid ${col==="#7a6a5a"?BORDER:`${col}40`}`,borderRadius:12,padding:"8px 13px",fontSize:11.5,color:col==="#7a6a5a"?MUTED:col,fontFamily:FONT,textAlign:"left",minWidth:80,boxShadow:"0 1px 3px rgba(61,53,48,0.05)"}}>
                   <div style={{fontWeight:600}}>{c.icon} {c.label}</div>
@@ -1219,7 +1230,7 @@ export default function App() {
         // silent
       } else {
         const p = prev[plantName];
-        const clearTypes = (type==="flush" || type==="water") ? ["flush","water"] : [type];
+        const clearTypes = type==="flush" ? ["flush","water"] : [type];
         const newDeferred = {...(p.deferred||{})};
         clearTypes.forEach(t=>{ newDeferred[t]=null; });
         const customDate = typeof extra === "object" && extra?.date ? extra.date : null;

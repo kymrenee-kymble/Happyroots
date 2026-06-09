@@ -195,19 +195,23 @@ function buildTasks(plants) {
     // Deferral filtering (active vs deferred) is handled by the useEffect,
     // which checks p.deferred[t.type] — so flush deferred → flush stays deferred,
     // not incorrectly replaced by a water-overdue task.
+    let waterOrFlushTaskPushed = false;
     if (!sessionLoggedToday) {
       if (lastWaterSession===null) {
         tasks.push({ id:`${name}::water`, plant:name, type:"water", age:null, threshold:waterThreshold,
           last:null, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
+        waterOrFlushTaskPushed = true;
       } else if (waterDue && flushDue) {
         const isFlushOverdue = flushLast !== null && flushBaselineAge !== null && flushBaselineAge > flushThreshold;
         tasks.push({ id:`${name}::flush`, plant:name, type:"flush", age:flushBaselineAge, threshold:flushThreshold,
           last:flushLast, overdue:isFlushOverdue, due:true, upcoming:false, neverLogged:false,
           replacesWater:true, daysUntilDue:0 });
+        waterOrFlushTaskPushed = true;
       } else if (waterDue || waterUpcoming) {
         tasks.push({ id:`${name}::water`, plant:name, type:"water", age:waterAge, threshold:waterThreshold,
           last:lastWaterSession, overdue:isWaterOverdue, due:waterDue, upcoming:waterUpcoming,
           neverLogged:false, daysUntilDue:waterThreshold-waterAge });
+        waterOrFlushTaskPushed = true;
       }
     }
     // ── Topdress ─────────────────────────────────────────────────────────────
@@ -215,8 +219,7 @@ function buildTasks(plants) {
     // If water/flush is deferred, topdress waits silently with it.
     const waterSessionDeferred = (p.deferred?.water && daysSince(p.deferred.water) < 0) ||
                                   (p.deferred?.flush && daysSince(p.deferred.flush) < 0);
-    const hasWaterOrFlushTask = !sessionLoggedToday && !waterSessionDeferred && (waterDue || flushDue) && lastWaterSession !== null;
-    if (hasWaterOrFlushTask) {
+    if (waterOrFlushTaskPushed) {
       const tdThreshold = effectiveInterval(p, "topdress");
       const tdLast = lastLogOf(p, "topdress");
       const tdBaseline = tdLast || p.addedDate || null;

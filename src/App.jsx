@@ -1039,8 +1039,9 @@ export default function App() {
             // Keep local plants (already loaded), push them to Drive so it catches up.
             console.log("Local is newer than Drive — keeping local, pushing to Drive");
             const localPlants = readLocal();
+            const localSavedAt1 = readLocalSavedAt();
             try {
-              await driveWriteFile({ plants: localPlants, chat: (localChat||[]).slice(-40), savedAt: localSavedAt });
+              await driveWriteFile({ plants: localPlants, chat: (localChat||[]).slice(-40), savedAt: localSavedAt1 });
               console.log("✓ Pushed local to Drive");
             } catch(e2) {
               console.log("✗ Push to Drive failed: " + e2);
@@ -1097,8 +1098,9 @@ export default function App() {
           // Local is newer — keep local, push to Drive so it catches up
           console.log("Local is newer than Drive — keeping local, pushing to Drive");
           const localPlants = readLocal();
+          const localSavedAt2 = readLocalSavedAt();
           try {
-            await driveWriteFile({ plants: localPlants, chat: [], savedAt: localSavedAt });
+            await driveWriteFile({ plants: localPlants, chat: [], savedAt: localSavedAt2 });
             console.log("✓ Pushed local to Drive");
             setDriveStatus("saved");
             showToast("☁️ Drive connected — synced your latest data");

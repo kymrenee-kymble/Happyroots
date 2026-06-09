@@ -211,14 +211,12 @@ function buildTasks(plants) {
       }
     }
     // ── Topdress ─────────────────────────────────────────────────────────────
-    // Topdress is always done alongside a watering session, never independently.
-    // Only generate when water is due AND no water/flush deferral is currently active
-    // (if water is deferred, topdress waits too — they're always done together).
+    // Topdress only appears alongside a water or flush task — never standalone.
+    // If water/flush is deferred, topdress waits silently with it.
     const waterSessionDeferred = (p.deferred?.water && daysSince(p.deferred.water) < 0) ||
                                   (p.deferred?.flush && daysSince(p.deferred.flush) < 0);
-    // Show topdress when water is due OR was already logged today (so it stays visible
-    // on the card after the user completes water, giving them a chance to log topdress too)
-    if ((waterDue || sessionLoggedToday) && !waterSessionDeferred) {
+    const hasWaterOrFlushTask = !sessionLoggedToday && !waterSessionDeferred && (waterDue || flushDue) && lastWaterSession !== null;
+    if ((hasWaterOrFlushTask || sessionLoggedToday) && !waterSessionDeferred) {
       const tdThreshold = effectiveInterval(p, "topdress");
       const tdLast = lastLogOf(p, "topdress");
       const tdBaseline = tdLast || p.addedDate || null;

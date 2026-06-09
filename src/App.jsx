@@ -139,6 +139,8 @@ function potModifier(plant) {
   else if (plant.soilPreset === "Cactus Mix")     mod *= 0.80; // very fast draining
   else if (plant.soilPreset === "Semi-hydro")     mod *= 0.72; // near-LECA behavior
   else if (plant.soilPreset === "Perlite")        mod *= 0.70; // fastest draining
+  else if (plant.soilPreset === "Fluval")         mod *= 0.72; // similar to semi-hydro
+  else if (plant.soilPreset === "Self-Watering")  mod *= 1.00; // reservoir managed
   return mod;
 }
 
@@ -492,13 +494,25 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename}){
           <div style={{fontSize:10,color:MUTED,textTransform:"uppercase",letterSpacing:1.8,marginBottom:9,fontWeight:600,fontFamily:SERIF,fontStyle:"italic"}}>Pot & Soil</div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
             <div>
-              <div style={{fontSize:9.5,color:MUTED,marginBottom:4}}>Pot size (inches)</div>
-              <input type="number" min="1" max="24"
-                defaultValue={plant.potSize||""}
-                placeholder="e.g. 4"
+              <div style={{fontSize:9.5,color:MUTED,marginBottom:4}}>Pot size</div>
+              <select defaultValue={plant.potSize||""}
                 onChange={e=>onLog(name,"__meta__",{potSize:e.target.value})}
-                style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:7,padding:"6px 9px",color:INK,fontFamily:FONT,fontSize:12}}
-              />
+                style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:7,padding:"6px 9px",color:plant.potSize?INK:MUTED,fontFamily:FONT,fontSize:12,appearance:"none"}}>
+                <option value="">— select —</option>
+                <optgroup label="Small">
+                  <option value="1oz">1 oz</option>
+                  <option value="2oz">2 oz</option>
+                </optgroup>
+                <optgroup label="Inches">
+                  <option value="1">1"</option>
+                  <option value="2">2"</option>
+                  <option value="3">3"</option>
+                  <option value="4">4"</option>
+                  <option value="5">5"</option>
+                  <option value="6">6"</option>
+                  <option value="8">8"</option>
+                </optgroup>
+              </select>
             </div>
             <div>
               <div style={{fontSize:9.5,color:MUTED,marginBottom:4}}>Pot material</div>
@@ -514,7 +528,7 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename}){
           <div style={{marginBottom:8}}>
             <div style={{fontSize:9.5,color:MUTED,marginBottom:5}}>Soil mix</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:7}}>
-              {["Chunky Aroid","Medium Aroid","Coir + Perlite","Tree Fern Fiber","Cactus Mix","Semi-hydro","Perlite"].map(p=>(
+              {["Chunky Aroid","Medium Aroid","Coir + Perlite","Tree Fern Fiber","Cactus Mix","Semi-hydro","Perlite","Fluval","Self-Watering"].map(p=>(
                 <button key={p} onClick={()=>onLog(name,"__meta__",{soilPreset:p})}
                   style={{padding:"4px 12px",borderRadius:20,fontSize:11,fontFamily:FONT,cursor:"pointer",
                     background:plant.soilPreset===p?SAGE:SURF,
@@ -654,18 +668,21 @@ function LogModal({plant,type,onLog,onClose}){
   const [isEarly,setIsEarly]=useState(false);
   const [pestProduct,setPestProduct]=useState("");
   const [pestNextDate,setPestNextDate]=useState("");
+  const todayISO = new Date().toISOString().slice(0,10);
+  const [logDate,setLogDate]=useState(todayISO);
   const isPest = type==="pest";
   const isNote = type==="note";
   const canBeEarly = type==="water" || type==="flush";
 
   const handleLog = () => {
+    const selectedDate = new Date(logDate + "T12:00:00").toISOString();
     if (isPest) {
-      const payload = { product:pestProduct, nextDate:pestNextDate, note };
+      const payload = { product:pestProduct, nextDate:pestNextDate, note, date:selectedDate };
       onLog(plant, type, payload);
     } else if (canBeEarly) {
-      onLog(plant, type, { note, early: isEarly });
+      onLog(plant, type, { note, early: isEarly, date:selectedDate });
     } else {
-      onLog(plant, type, note);
+      onLog(plant, type, { note, date:selectedDate });
     }
   };
 
@@ -710,13 +727,19 @@ function LogModal({plant,type,onLog,onClose}){
             </div>
           </button>
         )}
+        <div style={{marginBottom:11}}>
+          <div style={{fontSize:10,color:MUTED,marginBottom:4,textTransform:"uppercase",letterSpacing:1.5,fontStyle:"italic"}}>Date</div>
+          <input type="date" value={logDate} onChange={e=>setLogDate(e.target.value)}
+            style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:8,padding:"8px 11px",color:INK,fontFamily:FONT,fontSize:12,colorScheme:"light"}}
+          />
+        </div>
         <textarea value={note} onChange={e=>setNote(e.target.value)}
           placeholder={isPest?"Optional notes — e.g. signs observed, dilution used":isNote?"What did you observe?":"Optional note — e.g. soil was nearly dry, slight wilt"}
           rows={isPest?2:3}
           style={{width:"100%",background:SURF,border:`1px solid ${BORDER}`,borderRadius:9,padding:"10px 13px",color:INK,fontFamily:FONT,fontSize:12,resize:"none",marginBottom:13}}
         />
         <div style={{display:"flex",gap:8}}>
-          <button onClick={handleLog} style={{flex:1,background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:10,padding:"11px",fontSize:13,color:"#fff",fontFamily:FONT,fontWeight:600}}>{isEarly?"Log early":"Log today"}</button>
+          <button onClick={handleLog} style={{flex:1,background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:10,padding:"11px",fontSize:13,color:"#fff",fontFamily:FONT,fontWeight:600}}>{isEarly?"Log early":logDate===todayISO?"Log today":"Log "+new Date(logDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric"})}</button>
           <button onClick={onClose} style={{flex:1,background:SURF,border:`1px solid ${BORDER}`,borderRadius:10,padding:"11px",fontSize:13,color:MUTED,fontFamily:FONT}}>Cancel</button>
         </div>
       </div>
@@ -1169,9 +1192,10 @@ export default function App() {
         const clearTypes = type==="flush" ? [type,"water"] : [type];
         const newDeferred = {...(p.deferred||{})};
         clearTypes.forEach(t=>{ newDeferred[t]=null; });
+        const customDate = typeof extra === "object" && extra?.date ? extra.date : null;
         const logEntry = {
           type,
-          date: new Date().toISOString(),
+          date: customDate || new Date().toISOString(),
           note: typeof extra === "string" ? extra : (extra?.note || ""),
         };
         if (extra?.early) logEntry.early = true;

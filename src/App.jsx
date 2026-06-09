@@ -758,7 +758,7 @@ function LogModal({plant,type,onLog,onClose}){
         />
         <div style={{display:"flex",gap:8}}>
           <button onClick={handleLog} style={{flex:1,background:SAGE,border:`1px solid ${SAGE_D}`,borderRadius:10,padding:"11px",fontSize:13,color:"#fff",fontFamily:FONT,fontWeight:600}}>
-            {logDate===new Date().toISOString().split("T")[0] ? "Log today" : "Log for " + new Date(logDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric"})}
+            {(()=>{ const t=new Date().toISOString().slice(0,10); return logDate===t?"Log today":"Log for "+new Date(logDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric"}); })()}
           </button>
           <button onClick={onClose} style={{flex:1,background:SURF,border:`1px solid ${BORDER}`,borderRadius:10,padding:"11px",fontSize:13,color:MUTED,fontFamily:FONT}}>Cancel</button>
         </div>

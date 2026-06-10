@@ -232,9 +232,9 @@ function buildTasks(plants) {
       const tdAge = daysSince(tdBaseline);
       const tdLoggedToday = tdLast && toPacific(new Date(tdLast)).toDateString() === today;
       if (!tdLoggedToday && tdAge !== null && tdAge >= tdThreshold) {
-        if (isDebug) console.log("[PhuYen] pushing topdress — waterOrFlushTaskPushed:"+waterOrFlushTaskPushed+" tdAge:"+tdAge+" tdThreshold:"+tdThreshold+" pairedOverdue:"+pairedTaskOverdue);
+        if (isDebug) console.log("[PhuYen] pushing topdress — waterOrFlushTaskPushed:"+waterOrFlushTaskPushed+" tdAge:"+tdAge+" tdThreshold:"+tdThreshold);
         tasks.push({ id:`${name}::topdress`, plant:name, type:"topdress", age:tdAge, threshold:tdThreshold,
-          last:tdLast, overdue:pairedTaskOverdue, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
+          last:tdLast, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
       }
     }
   });
@@ -1570,10 +1570,10 @@ export default function App() {
               <div style={{fontSize:13,color:MUTED,lineHeight:1.8,fontStyle:"italic"}}>Nothing due or overdue today.<br/>Enjoy your plants.</div>
             </div>
           ):<>
-            <PlantSection color="#f09070" label="⚠ Overdue"     taskList={tasks.filter(t=>t.overdue)} />
-            <PlantSection color="#d4b060" label="Due Today"      taskList={tasks.filter(t=>t.due&&!t.overdue)} />
-            <PlantSection color="#c4a060" label="Due Tomorrow"   taskList={tasks.filter(t=>!t.due&&!t.overdue&&t.daysUntilDue===1)} />
-            <PlantSection color="#a09070" label="Coming Up"      taskList={tasks.filter(t=>!t.due&&!t.overdue&&t.upcoming&&t.daysUntilDue!==1)} />
+            <PlantSection color="#f09070" label="⚠ Overdue"     taskList={tasks.filter(t=>tasks.some(t2=>t2.plant===t.plant&&t2.overdue))} />
+            <PlantSection color="#d4b060" label="Due Today"      taskList={tasks.filter(t=>!tasks.some(t2=>t2.plant===t.plant&&t2.overdue)&&t.due)} />
+            <PlantSection color="#c4a060" label="Due Tomorrow"   taskList={tasks.filter(t=>!tasks.some(t2=>t2.plant===t.plant&&(t2.overdue||t2.due))&&t.daysUntilDue===1)} />
+            <PlantSection color="#a09070" label="Coming Up"      taskList={tasks.filter(t=>!tasks.some(t2=>t2.plant===t.plant&&(t2.overdue||t2.due))&&t.upcoming&&t.daysUntilDue!==1)} />
             {doneTasks.length>0&&(
               <section style={{marginBottom:20}}>
                 <div style={{fontSize:12,color:MUTED,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>Done Today ✓</div>

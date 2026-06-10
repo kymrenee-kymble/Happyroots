@@ -197,13 +197,13 @@ function buildTasks(plants) {
     // which checks p.deferred[t.type] — so flush deferred → flush stays deferred,
     // not incorrectly replaced by a water-overdue task.
     let waterOrFlushTaskPushed = false;
-    if (isDebug) console.log("[PhuYen] waterAge:"+waterAge+" threshold:"+waterThreshold+" waterDue:"+waterDue+" flushAge:"+flushAge+" flushBaselineAge:"+flushBaselineAge+" flushDue:"+flushDue+" sessionLoggedToday:"+sessionLoggedToday);
+    if (isDebug) console.log("[PhuYen] waterAge:"+waterAge+" threshold:"+waterThreshold+" waterDue:"+waterDue+" flushAge:"+flushAge+" flushBaselineAge:"+flushBaselineAge+" flushDue:"+flushDue+" sessionLoggedToday:"+sessionLoggedToday+" waterUpcoming:"+waterUpcoming);
     if (!sessionLoggedToday) {
       if (lastWaterSession===null) {
         tasks.push({ id:`${name}::water`, plant:name, type:"water", age:null, threshold:waterThreshold,
           last:null, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
         waterOrFlushTaskPushed = true;
-      } else if (waterDue && flushDue) {
+      } else if ((waterDue || waterUpcoming) && flushDue) {
         const isFlushOverdue = flushLast !== null && flushBaselineAge !== null && flushBaselineAge > flushThreshold;
         tasks.push({ id:`${name}::flush`, plant:name, type:"flush", age:flushBaselineAge, threshold:flushThreshold,
           last:flushLast, overdue:isFlushOverdue, due:true, upcoming:false, neverLogged:false,
@@ -213,7 +213,7 @@ function buildTasks(plants) {
         tasks.push({ id:`${name}::water`, plant:name, type:"water", age:waterAge, threshold:waterThreshold,
           last:lastWaterSession, overdue:isWaterOverdue, due:waterDue, upcoming:waterUpcoming,
           neverLogged:false, daysUntilDue:waterThreshold-waterAge });
-        waterOrFlushTaskPushed = true;
+        waterOrFlushTaskPushed = waterDue; // only allow topdress if actually due, not just upcoming
       }
     }
     // ── Topdress ─────────────────────────────────────────────────────────────

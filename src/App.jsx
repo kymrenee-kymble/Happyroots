@@ -1183,6 +1183,7 @@ export default function App() {
     const active=[],done=[],deferred=[];
     all.forEach(t=>{
       const p=plants[t.plant];
+      const isDebugTask = t.plant === "Phu Yen";
       // For flush tasks: logging water today also counts as done (flush replaces water)
       // For water tasks: logging flush today also counts as done
       const typesToCheck = (t.type==="flush") ? ["flush","water"] : (t.type==="water") ? ["water","flush"] : [t.type];
@@ -1190,6 +1191,7 @@ export default function App() {
         const last=lastLogOf(p,type);
         return last && toPacific(new Date(last)).toDateString()===today;
       });
+      if(isDebugTask) console.log("[PhuYen filter] type:"+t.type+" loggedToday:"+loggedToday+" deferred:"+JSON.stringify(p.deferred?.[t.type])+" daysSince:"+daysSince(p.deferred?.[t.type]));
       if(loggedToday){done.push(t);return;}
       const def=p.deferred?.[t.type];
       if(def && daysSince(def) < 0){deferred.push(t);return;}

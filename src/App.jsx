@@ -170,6 +170,7 @@ function buildTasks(plants) {
   const today = todayStr();
   const tasks = [];
   Object.entries(plants).forEach(([name, p]) => {
+    const isDebug = name === "Phu Yen";
     // ── Water vs Flush rotation ──────────────────────────────────────────────
     // Flush replaces a watering session — never appears alongside it.
     // When watering is due AND it has been >=30d since last flush → show Flush.
@@ -196,6 +197,7 @@ function buildTasks(plants) {
     // which checks p.deferred[t.type] — so flush deferred → flush stays deferred,
     // not incorrectly replaced by a water-overdue task.
     let waterOrFlushTaskPushed = false;
+    if (isDebug) console.log("[PhuYen] waterAge:"+waterAge+" threshold:"+waterThreshold+" waterDue:"+waterDue+" flushAge:"+flushAge+" flushBaselineAge:"+flushBaselineAge+" flushDue:"+flushDue+" sessionLoggedToday:"+sessionLoggedToday);
     if (!sessionLoggedToday) {
       if (lastWaterSession===null) {
         tasks.push({ id:`${name}::water`, plant:name, type:"water", age:null, threshold:waterThreshold,
@@ -226,6 +228,7 @@ function buildTasks(plants) {
       const tdAge = daysSince(tdBaseline);
       const tdLoggedToday = tdLast && toPacific(new Date(tdLast)).toDateString() === today;
       if (!tdLoggedToday && tdAge !== null && tdAge >= tdThreshold) {
+        if (isDebug) console.log("[PhuYen] pushing topdress — waterOrFlushTaskPushed:"+waterOrFlushTaskPushed+" tdAge:"+tdAge+" tdThreshold:"+tdThreshold);
         tasks.push({ id:`${name}::topdress`, plant:name, type:"topdress", age:tdAge, threshold:tdThreshold,
           last:tdLast, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
       }

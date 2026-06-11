@@ -170,7 +170,6 @@ function buildTasks(plants) {
   const today = todayStr();
   const tasks = [];
   Object.entries(plants).forEach(([name, p]) => {
-    const isDebug = name === "Phu Yen";
     // ── Water vs Flush rotation ──────────────────────────────────────────────
     // Flush replaces a watering session — never appears alongside it.
     // When watering is due AND it has been >=30d since last flush → show Flush.
@@ -191,33 +190,33 @@ function buildTasks(plants) {
     const waterDue      = waterAge!==null && waterAge>=waterThreshold;
     const waterUpcoming = !waterDue && waterAge!==null && waterAge>=waterThreshold*0.75;
     const flushDue      = flushBaselineAge!==null && flushBaselineAge>=flushThreshold;
-    const isWaterOverdue = waterDue && (lastWaterSession === null || waterAge > waterThreshold);
+    // If a deferral expired today or recently, treat as due (not overdue) — the deferral was intentional
+    const recentWaterDef = p.deferred?.water && daysSince(p.deferred.water) >= 0 ? p.deferred.water : null;
+    const recentFlushDef = p.deferred?.flush && daysSince(p.deferred.flush) >= 0 ? p.deferred.flush : null;
+    const recentDef = [recentWaterDef, recentFlushDef].filter(Boolean).sort((a,b)=>new Date(b)-new Date(a))[0] || null;
+    const deferredRecentlyExpired = recentDef && (!lastWaterSession || new Date(recentDef) > new Date(lastWaterSession));
+    const isWaterOverdue = !deferredRecentlyExpired && waterDue && (lastWaterSession === null || waterAge > waterThreshold);
     // buildTasks only decides WHAT task type to show based on schedule.
     // Deferral filtering (active vs deferred) is handled by the useEffect,
     // which checks p.deferred[t.type] — so flush deferred → flush stays deferred,
     // not incorrectly replaced by a water-overdue task.
     let waterOrFlushTaskPushed = false;
-    let pairedTaskOverdue = false;
-    if (isDebug) console.log("[PhuYen] waterAge:"+waterAge+" threshold:"+waterThreshold+" waterDue:"+waterDue+" flushAge:"+flushAge+" flushBaselineAge:"+flushBaselineAge+" flushDue:"+flushDue+" sessionLoggedToday:"+sessionLoggedToday+" waterUpcoming:"+waterUpcoming);
     if (!sessionLoggedToday) {
       if (lastWaterSession===null) {
         tasks.push({ id:`${name}::water`, plant:name, type:"water", age:null, threshold:waterThreshold,
           last:null, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
         waterOrFlushTaskPushed = true;
-        pairedTaskOverdue = false;
       } else if ((waterDue || waterUpcoming) && flushDue) {
-        const isFlushOverdue = flushLast !== null && flushBaselineAge !== null && flushBaselineAge > flushThreshold;
+        const isFlushOverdue = !deferredRecentlyExpired && flushLast !== null && flushBaselineAge !== null && flushBaselineAge > flushThreshold;
         tasks.push({ id:`${name}::flush`, plant:name, type:"flush", age:flushBaselineAge, threshold:flushThreshold,
           last:flushLast, overdue:isFlushOverdue, due:true, upcoming:false, neverLogged:false,
           replacesWater:true, daysUntilDue:0 });
         waterOrFlushTaskPushed = true;
-        pairedTaskOverdue = isFlushOverdue;
       } else if (waterDue || waterUpcoming) {
         tasks.push({ id:`${name}::water`, plant:name, type:"water", age:waterAge, threshold:waterThreshold,
           last:lastWaterSession, overdue:isWaterOverdue, due:waterDue, upcoming:waterUpcoming,
           neverLogged:false, daysUntilDue:waterThreshold-waterAge });
         waterOrFlushTaskPushed = waterDue;
-        pairedTaskOverdue = isWaterOverdue;
       }
     }
     // ── Topdress ─────────────────────────────────────────────────────────────
@@ -232,7 +231,6 @@ function buildTasks(plants) {
       const tdAge = daysSince(tdBaseline);
       const tdLoggedToday = tdLast && toPacific(new Date(tdLast)).toDateString() === today;
       if (!tdLoggedToday && tdAge !== null && tdAge >= tdThreshold) {
-        if (isDebug) console.log("[PhuYen] pushing topdress — waterOrFlushTaskPushed:"+waterOrFlushTaskPushed+" tdAge:"+tdAge+" tdThreshold:"+tdThreshold);
         tasks.push({ id:`${name}::topdress`, plant:name, type:"topdress", age:tdAge, threshold:tdThreshold,
           last:tdLast, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
       }
@@ -1187,7 +1185,6 @@ export default function App() {
     const active=[],done=[],deferred=[];
     all.forEach(t=>{
       const p=plants[t.plant];
-      const isDebugTask = t.plant === "Phu Yen";
       // For flush tasks: logging water today also counts as done (flush replaces water)
       // For water tasks: logging flush today also counts as done
       const typesToCheck = (t.type==="flush") ? ["flush","water"] : (t.type==="water") ? ["water","flush"] : [t.type];
@@ -1195,7 +1192,6 @@ export default function App() {
         const last=lastLogOf(p,type);
         return last && toPacific(new Date(last)).toDateString()===today;
       });
-      if(isDebugTask) console.log("[PhuYen filter] type:"+t.type+" loggedToday:"+loggedToday+" deferred:"+JSON.stringify(p.deferred?.[t.type])+" daysSince:"+daysSince(p.deferred?.[t.type]));
       if(loggedToday){done.push(t);return;}
       const def=p.deferred?.[t.type];
       if(def && daysSince(def) < 0){deferred.push(t);return;}

@@ -213,10 +213,8 @@ function buildTasks(plants) {
     let waterOrFlushTaskPushed = false;
     if (!sessionLoggedToday) {
       if (lastWaterSession===null) {
-        const neverWateredAge = daysSince(p.addedDate);
-        const neverWateredOverdue = neverWateredAge !== null && neverWateredAge > waterThreshold;
         tasks.push({ id:`${name}::water`, plant:name, type:"water", age:null, threshold:waterThreshold,
-          last:null, overdue:neverWateredOverdue, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
+          last:null, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
         waterOrFlushTaskPushed = true;
       } else if ((waterDue || waterUpcoming) && flushDue && !(p.deferred?.flush && daysSince(p.deferred.flush) < 0)) {
         const isFlushOverdue = !deferredRecentlyExpired && waterDue && waterAge > waterThreshold && flushLast !== null && flushBaselineAge !== null && flushBaselineAge > flushThreshold;

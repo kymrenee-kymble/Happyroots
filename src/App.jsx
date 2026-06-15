@@ -205,7 +205,9 @@ function buildTasks(plants) {
     const recentFlushDef = p.deferred?.flush && daysSince(p.deferred.flush) === 0 ? p.deferred.flush : null;
     const recentDef = [recentWaterDef, recentFlushDef].filter(Boolean).sort((a,b)=>new Date(b)-new Date(a))[0] || null;
     const deferredRecentlyExpired = recentDef && (!lastWaterSession || new Date(recentDef) > new Date(lastWaterSession));
-    const isWaterOverdue = !deferredRecentlyExpired && waterDue && (lastWaterSession === null || waterAge > waterThreshold);
+    const hasActiveDeferral = (p.deferred?.water && daysSince(p.deferred.water) < 0) ||
+                               (p.deferred?.flush && daysSince(p.deferred.flush) < 0);
+    const isWaterOverdue = !hasActiveDeferral && !deferredRecentlyExpired && waterDue && (lastWaterSession === null || waterAge > waterThreshold);
     // buildTasks only decides WHAT task type to show based on schedule.
     // Deferral filtering (active vs deferred) is handled by the useEffect,
     // which checks p.deferred[t.type] — so flush deferred → flush stays deferred,
@@ -217,7 +219,7 @@ function buildTasks(plants) {
           last:null, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
         waterOrFlushTaskPushed = true;
       } else if ((waterDue || waterUpcoming) && flushDue && !(p.deferred?.flush && daysSince(p.deferred.flush) < 0)) {
-        const isFlushOverdue = !deferredRecentlyExpired && waterDue && waterAge > waterThreshold && flushLast !== null && flushBaselineAge !== null && flushBaselineAge > flushThreshold;
+        const isFlushOverdue = !hasActiveDeferral && !deferredRecentlyExpired && waterDue && waterAge > waterThreshold && flushLast !== null && flushBaselineAge !== null && flushBaselineAge > flushThreshold;
         tasks.push({ id:`${name}::flush`, plant:name, type:"flush", age:flushBaselineAge, threshold:flushThreshold,
           last:flushLast, overdue:isFlushOverdue, due:true, upcoming:false, neverLogged:false,
           replacesWater:true, daysUntilDue:0 });

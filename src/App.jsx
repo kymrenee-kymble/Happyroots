@@ -213,10 +213,12 @@ function buildTasks(plants) {
     let waterOrFlushTaskPushed = false;
     if (!sessionLoggedToday) {
       if (lastWaterSession===null) {
+        const neverWateredAge = daysSince(p.addedDate);
+        const neverWateredOverdue = neverWateredAge !== null && neverWateredAge > waterThreshold;
         tasks.push({ id:`${name}::water`, plant:name, type:"water", age:null, threshold:waterThreshold,
-          last:null, overdue:false, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
+          last:null, overdue:neverWateredOverdue, due:true, upcoming:false, neverLogged:false, daysUntilDue:0 });
         waterOrFlushTaskPushed = true;
-      } else if ((waterDue || waterUpcoming) && flushDue) {
+      } else if ((waterDue || waterUpcoming) && flushDue && !(p.deferred?.flush && daysSince(p.deferred.flush) < 0)) {
         const isFlushOverdue = !deferredRecentlyExpired && waterDue && waterAge > waterThreshold && flushLast !== null && flushBaselineAge !== null && flushBaselineAge > flushThreshold;
         tasks.push({ id:`${name}::flush`, plant:name, type:"flush", age:flushBaselineAge, threshold:flushThreshold,
           last:flushLast, overdue:isFlushOverdue, due:true, upcoming:false, neverLogged:false,
@@ -329,10 +331,12 @@ function PlantTaskCard({plantName, location, tasks, onDone, onDefer, onOpenPlant
           const c = CARE[task.type];
           const isOD = task.overdue;
           const isDue = task.due && !task.overdue;
+          const isDeferred = task.isDeferred;
           const accentColor = isOD ? "#f09070" : isDue ? `hsl(${c.hue},65%,68%)` : "#8a7a60";
-          const status = isOD                        ? `${task.age-task.threshold}d overdue`
-            : task.due && task.age===null              ? "never watered — water now"
-            : task.due                                 ? `${task.age}d since last`
+          const status = isDeferred                      ? `in ${task.daysUntilDue}d`
+            : isOD                                       ? `${task.age-task.threshold}d overdue`
+            : task.due && task.age===null                ? "never watered — water now"
+            : task.due                                   ? `${task.age}d since last`
             : `in ~${task.threshold-task.age}d`;
 
           return (
@@ -344,7 +348,7 @@ function PlantTaskCard({plantName, location, tasks, onDone, onDefer, onOpenPlant
                   <div style={{fontSize:11,color:MUTED,marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.action}</div>
                 </div>
                 <div style={{fontSize:12,color:isOD?TERRA:isDue?CLAY:MUTED,flexShrink:0,marginRight:6,fontStyle:"italic"}}>{status}</div>
-                <div style={{display:"flex",gap:5,flexShrink:0}}>
+                {!isDeferred && <div style={{display:"flex",gap:5,flexShrink:0}}>
                   <button
                     onClick={()=>setWetFor(wetFor===task.type?null:task.type)}
                     style={{
@@ -360,9 +364,9 @@ function PlantTaskCard({plantName, location, tasks, onDone, onDefer, onOpenPlant
                       color:"#fff",fontFamily:FONT,fontWeight:600}}>
                     ✓ done
                   </button>
-                </div>
+                </div>}
               </div>
-              {wetFor===task.type&&(
+              {!isDeferred && wetFor===task.type&&(
                 <div style={{padding:"6px 14px 9px 46px",display:"flex",alignItems:"center",gap:7,flexWrap:"wrap",background:`${SURF}`}}>
                   {task.type==="topdress" ? (
                     <>
@@ -1202,8 +1206,6 @@ export default function App() {
     const active=[],done=[],deferred=[];
     all.forEach(t=>{
       const p=plants[t.plant];
-      // For flush tasks: logging water today also counts as done (flush replaces water)
-      // For water tasks: logging flush today also counts as done
       const typesToCheck = (t.type==="flush") ? ["flush","water"] : (t.type==="water") ? ["water","flush"] : [t.type];
       const loggedToday = typesToCheck.some(type => {
         const last=lastLogOf(p,type);
@@ -1211,7 +1213,12 @@ export default function App() {
       });
       if(loggedToday){done.push(t);return;}
       const def=p.deferred?.[t.type];
-      if(def && daysSince(def) < 0){deferred.push(t);return;}
+      if(def && daysSince(def) < 0){
+        // Show deferred tasks in Coming Up so they're visible — just not actionable yet
+        const daysUntilExpiry = -daysSince(def);
+        active.push({...t, due:false, overdue:false, upcoming:true, daysUntilDue:daysUntilExpiry, isDeferred:true});
+        return;
+      }
       active.push(t);
     });
     // Stable plant order: lock positions on first build, preserve across updates within the session.
@@ -1531,7 +1538,7 @@ export default function App() {
             {overdueCt>0  && <span style={{background:`${TERRA}18`,color:TERRA,border:`1px solid ${TERRA}50`,borderRadius:20,padding:"4px 11px",fontSize:12,fontWeight:700}}>{overdueCt} overdue</span>}
             {dueCt>0      && <span style={{background:`${CLAY}22`,color:TERRA,border:`1px solid ${CLAY}60`,borderRadius:20,padding:"4px 11px",fontSize:12,fontWeight:700}}>{dueCt} due today</span>}
             {doneTasks.length>0 && <span style={{background:`${SAGE}15`,color:SAGE_D,border:`1px solid ${SAGE}40`,borderRadius:20,padding:"4px 11px",fontSize:12,fontWeight:700}}>{doneTasks.length} done ✓</span>}
-            {overdueCt===0&&dueCt===0&&doneTasks.length===0 && <span style={{background:`${SAGE}12`,color:SAGE_D,border:`1px solid ${SAGE}30`,borderRadius:20,padding:"4px 11px",fontSize:12,fontWeight:600}}>all clear ✓</span>}
+            {overdueCt===0&&dueCt===0&&doneTasks.length===0&&upcomingCt===0 && <span style={{background:`${SAGE}12`,color:SAGE_D,border:`1px solid ${SAGE}30`,borderRadius:20,padding:"4px 11px",fontSize:12,fontWeight:600}}>all clear ✓</span>}
           </div>
         </div>
         <div style={{display:"flex",gap:5,alignItems:"center",justifyContent:"space-between"}}>
@@ -1583,17 +1590,29 @@ export default function App() {
               </button>
             </div>
           )}
-          {tasks.length===0&&doneTasks.length===0&&deferredTasks.length===0 ? (
+          {tasks.length===0&&doneTasks.length===0 ? (
             <div style={{textAlign:"center",padding:"72px 24px",animation:"fadeUp .3s ease"}}>
               <div style={{fontSize:56,marginBottom:16}}>🌿</div>
               <div style={{fontFamily:SERIF,fontSize:22,color:INK,marginBottom:10}}>All caught up!</div>
               <div style={{fontSize:13,color:MUTED,lineHeight:1.8,fontStyle:"italic"}}>Nothing due or overdue today.<br/>Enjoy your plants.</div>
             </div>
           ):<>
-            <PlantSection color="#f09070" label="⚠ Overdue"     taskList={tasks.filter(t=>tasks.some(t2=>t2.plant===t.plant&&t2.overdue))} />
-            <PlantSection color="#d4b060" label="Due Today"      taskList={tasks.filter(t=>!tasks.some(t2=>t2.plant===t.plant&&t2.overdue)&&t.due)} />
-            <PlantSection color="#c4a060" label="Due Tomorrow"   taskList={tasks.filter(t=>!tasks.some(t2=>t2.plant===t.plant&&(t2.overdue||t2.due))&&t.daysUntilDue===1)} />
-            <PlantSection color="#a09070" label="Coming Up"      taskList={tasks.filter(t=>!tasks.some(t2=>t2.plant===t.plant&&(t2.overdue||t2.due))&&t.upcoming&&t.daysUntilDue!==1)} />
+            <PlantSection color="#f09070" label="⚠ Overdue"     taskList={tasks.filter(t=>!t.isDeferred&&tasks.some(t2=>!t2.isDeferred&&t2.plant===t.plant&&t2.overdue))} />
+            <PlantSection color="#d4b060" label="Due Today"      taskList={tasks.filter(t=>!t.isDeferred&&!tasks.some(t2=>!t2.isDeferred&&t2.plant===t.plant&&t2.overdue)&&t.due)} />
+            {(()=>{
+              // Group upcoming/deferred tasks by daysUntilDue, show one section per day
+              const upcoming = tasks.filter(t=>!tasks.some(t2=>t2.plant===t.plant&&(t2.overdue||t2.due))&&!t.due&&!t.overdue&&t.daysUntilDue>0);
+              const byDay = {};
+              upcoming.forEach(t=>{ const d=t.daysUntilDue; if(!byDay[d])byDay[d]=[]; byDay[d].push(t); });
+              const days = Object.keys(byDay).map(Number).sort((a,b)=>a-b);
+              return days.map(d=>{
+                const nowP = toPacific(new Date());
+                const date = new Date(nowP.getFullYear(), nowP.getMonth(), nowP.getDate() + d);
+                const label = d===1 ? "Due Tomorrow" : date.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric",timeZone:"America/Los_Angeles"});
+                const color = d===1?"#c4a060":d<=3?"#a09070":"#8a8070";
+                return <PlantSection key={d} color={color} label={label} taskList={byDay[d]} />;
+              });
+            })()}
             {doneTasks.length>0&&(
               <section style={{marginBottom:20}}>
                 <div style={{fontSize:12,color:MUTED,textTransform:"uppercase",letterSpacing:2,marginBottom:9,fontWeight:700}}>Done Today ✓</div>

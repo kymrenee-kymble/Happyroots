@@ -96,6 +96,16 @@ function effectiveInterval(plant, type) {
 
 const toPacific = d => new Date(new Date(d).toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
 const todayStr  = () => toPacific(new Date()).toDateString();
+// Returns ISO string using Pacific date (YYYY-MM-DDThh:mm:ss) so logs are always recorded on the correct Pacific calendar day
+const nowPacificISO = () => {
+  const p = toPacific(new Date());
+  return new Date(p.getFullYear(), p.getMonth(), p.getDate(), p.getHours(), p.getMinutes(), p.getSeconds()).toISOString();
+};
+// Returns today's date as YYYY-MM-DD in Pacific time (for date picker default)
+const todayPacificISO = () => {
+  const p = toPacific(new Date());
+  return `${p.getFullYear()}-${String(p.getMonth()+1).padStart(2,'0')}-${String(p.getDate()).padStart(2,'0')}`;
+};
 const daysSince = d => {
   if (!d) return null;
   const nowP  = toPacific(new Date());
@@ -114,7 +124,7 @@ function lastLogOf(plant, type) {
 function mkPlant() {
   return {
     schedule:{...DEFAULT_SCHED}, logs:[], deferred:{}, manualOverrides:{},
-    location:"", addedDate:new Date().toISOString(),
+    location:"", addedDate:nowPacificISO(),
     // pot & soil metadata — used by adaptive learning
     potSize:"",        // e.g. "2 inch", "4 inch", "6 inch"
     potMaterial:"",    // "plastic" | "terracotta"
@@ -191,8 +201,8 @@ function buildTasks(plants) {
     const waterUpcoming = !waterDue && waterAge!==null && waterAge>=waterThreshold*0.75;
     const flushDue      = flushBaselineAge!==null && flushBaselineAge>=flushThreshold;
     // If a deferral expired today or recently, treat as due (not overdue) — the deferral was intentional
-    const recentWaterDef = p.deferred?.water && daysSince(p.deferred.water) >= 0 ? p.deferred.water : null;
-    const recentFlushDef = p.deferred?.flush && daysSince(p.deferred.flush) >= 0 ? p.deferred.flush : null;
+    const recentWaterDef = p.deferred?.water && daysSince(p.deferred.water) === 0 ? p.deferred.water : null;
+    const recentFlushDef = p.deferred?.flush && daysSince(p.deferred.flush) === 0 ? p.deferred.flush : null;
     const recentDef = [recentWaterDef, recentFlushDef].filter(Boolean).sort((a,b)=>new Date(b)-new Date(a))[0] || null;
     const deferredRecentlyExpired = recentDef && (!lastWaterSession || new Date(recentDef) > new Date(lastWaterSession));
     const isWaterOverdue = !deferredRecentlyExpired && waterDue && (lastWaterSession === null || waterAge > waterThreshold);
@@ -224,7 +234,8 @@ function buildTasks(plants) {
     // If water/flush is deferred, topdress waits silently with it.
     const waterSessionDeferred = (p.deferred?.water && daysSince(p.deferred.water) < 0) ||
                                   (p.deferred?.flush && daysSince(p.deferred.flush) < 0);
-    if (waterOrFlushTaskPushed) {
+    const topdressDeferred = p.deferred?.topdress && daysSince(p.deferred.topdress) < 0;
+    if (waterOrFlushTaskPushed && !waterSessionDeferred && !topdressDeferred) {
       const tdThreshold = effectiveInterval(p, "topdress");
       const tdLast = lastLogOf(p, "topdress");
       const tdBaseline = tdLast || p.addedDate || null;
@@ -480,7 +491,13 @@ function PlantSheet({name,plant,onLog,onClose,onDelete,onSetLocation,onRename}){
           {/* Scheduled care */}
           <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:8}}>
             {Object.entries(CARE).filter(([,c])=>c.scheduled).map(([type,c])=>{
-              const last=lastLogOf(plant,type);
+              // For water: flush counts as a water session, use most recent of either
+              const waterLast = lastLogOf(plant,"water");
+              const flushLast2 = lastLogOf(plant,"flush");
+              const lastWaterSession = (waterLast && flushLast2)
+                ? (new Date(waterLast) > new Date(flushLast2) ? waterLast : flushLast2)
+                : (waterLast || flushLast2);
+              const last = type==="water" ? lastWaterSession : lastLogOf(plant,type);
               const age=daysSince(last);
               const eff=effectiveInterval(plant,type);
               const pct=age!==null?age/eff:null;
@@ -689,7 +706,7 @@ function LogModal({plant,type,onLog,onClose}){
   const [isEarly,setIsEarly]=useState(false);
   const [pestProduct,setPestProduct]=useState("");
   const [pestNextDate,setPestNextDate]=useState("");
-  const todayISO = new Date().toISOString().slice(0,10);
+  const todayISO = todayPacificISO();
   const [logDate,setLogDate]=useState(todayISO);
   const isPest = type==="pest";
   const isNote = type==="note";
@@ -1252,12 +1269,15 @@ export default function App() {
       } else {
         const p = prev[plantName];
         const clearTypes = type==="flush" ? ["flush","water"] : [type];
+        // When logging water or flush, also clear any topdress deferral
+        // since topdress is always done alongside water and shouldn't show up standalone after
+        const clearDeferTypes = (type==="flush" || type==="water") ? [...clearTypes, "topdress"] : clearTypes;
         const newDeferred = {...(p.deferred||{})};
-        clearTypes.forEach(t=>{ newDeferred[t]=null; });
+        clearDeferTypes.forEach(t=>{ newDeferred[t]=null; });
         const customDate = typeof extra === "object" && extra?.date ? extra.date : null;
         const logEntry = {
           type,
-          date: customDate || new Date().toISOString(),
+          date: customDate || nowPacificISO(),
           note: typeof extra === "string" ? extra : (extra?.note || ""),
         };
         if (extra?.early) logEntry.early = true;
@@ -1275,27 +1295,31 @@ export default function App() {
 
   function deferTask(task, days=1) {
     const isNextWater = days === "nextWater";
+    // Set deferral to end-of-day Pacific time on the target day
+    // so daysSince() (which compares calendar days in Pacific) evaluates correctly
+    const pacificMidnight = (daysFromNow) => {
+      const now = toPacific(new Date());
+      const target = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysFromNow, 23, 59, 59);
+      return target.toISOString();
+    };
     setPlants(prev => {
       const p = prev[task.plant];
-      // For "next watering": calculate when water is next due based on interval
-      let until;
+      let untilISO;
       if (isNextWater) {
         const waterInterval = effectiveInterval(p, "water");
         const lastWater = lastLogOf(p, "water") || lastLogOf(p, "flush");
         const daysSinceWater = lastWater ? daysSince(lastWater) : 0;
         const daysUntilWater = Math.max(1, waterInterval - daysSinceWater);
-        until = new Date();
-        until.setDate(until.getDate() + daysUntilWater);
+        untilISO = pacificMidnight(daysUntilWater);
       } else {
-        until = new Date();
-        until.setDate(until.getDate() + days);
+        untilISO = pacificMidnight(days);
       }
       const logs = [...(p.logs||[])];
       if (!isNextWater) {
         const lastIdx = logs.map(l=>l.type).lastIndexOf(task.type);
         if (lastIdx !== -1) logs[lastIdx] = { ...logs[lastIdx], wetDays: (logs[lastIdx].wetDays||0)+days };
       }
-      const n = { ...prev, [task.plant]: { ...p, logs, deferred: { ...(p.deferred||{}), [task.type]: until.toISOString() } } };
+      const n = { ...prev, [task.plant]: { ...p, logs, deferred: { ...(p.deferred||{}), [task.type]: untilISO } } };
       return n;
     });
     showToast(isNextWater

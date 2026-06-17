@@ -959,6 +959,8 @@ export default function App() {
   const [showDataMenu,setShowDataMenu] = useState(false);
   const chatEnd = useRef(null);
   const saveTimer = useRef(null);
+  const driveWriteInFlightRef = useRef(false); // true while a Drive write is in progress
+  const pendingDriveWriteRef = useRef(null);   // latest queued payload waiting to be written
   const importRef = useRef(null);
   const driveAuthedRef = useRef(false); // ref so persist closure never goes stale
 
@@ -1182,14 +1184,27 @@ export default function App() {
     }
     if (saveTimer.current) clearTimeout(saveTimer.current);
     setDriveStatus("syncing");
+    // Serialize Drive writes: if a write is already in flight, queue this one
+    // to run immediately after it finishes (with the latest plants snapshot),
+    // instead of firing concurrently — concurrent writes can race and the
+    // slower request can overwrite Drive with stale/incomplete data.
     const doDriveSave = async () => {
+      pendingDriveWriteRef.current = { plants: p, chat: (chat||[]).slice(-40), savedAt: saved.savedAt };
+      if (driveWriteInFlightRef.current) return; // a write is already running; it will pick up the latest pending payload when done
+      driveWriteInFlightRef.current = true;
       try {
-        await driveWriteFile({ plants: p, chat: (chat||[]).slice(-40), savedAt: saved.savedAt });
+        while (pendingDriveWriteRef.current) {
+          const payload = pendingDriveWriteRef.current;
+          pendingDriveWriteRef.current = null;
+          await driveWriteFile(payload);
+        }
         setDriveStatus("saved");
         console.log("✓ Drive saved");
       } catch(e) {
         console.log("✗ Drive save FAILED: " + e);
         setDriveStatus("error");
+      } finally {
+        driveWriteInFlightRef.current = false;
       }
     };
     if (immediate) {
@@ -1734,7 +1749,7 @@ export default function App() {
           onClose={()=>setDetailPlant(null)} onDelete={deletePlant} onSetLocation={setPlantLocation} onRename={renamePlant}
         />
       )}
-      {logModal&&<LogModal plant={logModal.plant} type={logModal.type} onLog={logCare} onClose={()=>setLogModal(null)}/>}
+      {logModal&&<LogModal key={logModal.plant+logModal.type} plant={logModal.plant} type={logModal.type} onLog={logCare} onClose={()=>setLogModal(null)}/>}
       {addModal&&<AddPlantModal onAdd={addPlant} onClose={()=>setAddModal(false)}/>}
       <Toast msg={toast.msg} visible={toast.visible}/>
     </div>

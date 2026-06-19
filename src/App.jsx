@@ -865,18 +865,29 @@ async function getAccessToken(forcePrompt = false) {
   });
 }
 
-async function driveReadFile() {
-  await initGapi();
-  const token = await getAccessToken();
-  // Find file in appDataFolder
+// Cache the Drive file ID so we don't do a files.list() on every write
+let _driveFileId = null;
+
+async function getDriveFileId(token) {
+  if (_driveFileId) return _driveFileId;
   const list = await window.gapi.client.drive.files.list({
     spaces: "appDataFolder",
     q: `name = '${GDRIVE_FILE}'`,
-    fields: "files(id,name,modifiedTime)",
+    fields: "files(id)",
   });
   const files = list.result.files || [];
-  if (!files.length) return null;
-  const fileId = files[0].id;
+  if (files.length) {
+    _driveFileId = files[0].id;
+    return _driveFileId;
+  }
+  return null;
+}
+
+async function driveReadFile() {
+  await initGapi();
+  const token = await getAccessToken();
+  const fileId = await getDriveFileId(token);
+  if (!fileId) return null;
   const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
     headers: { Authorization: `Bearer ${token}` }
   });
@@ -889,32 +900,32 @@ async function driveWriteFile(payload) {
   const token = await getAccessToken();
   const body = JSON.stringify({ ...payload, savedAt: new Date().toISOString() });
 
-  // Check if file already exists
-  const list = await window.gapi.client.drive.files.list({
-    spaces: "appDataFolder",
-    q: `name = '${GDRIVE_FILE}'`,
-    fields: "files(id)",
-  });
-  const files = list.result.files || [];
+  let fileId = await getDriveFileId(token);
 
-  if (files.length) {
-    // Update existing file
-    await fetch(`https://www.googleapis.com/upload/drive/v3/files/${files[0].id}?uploadType=media`, {
+  if (fileId) {
+    const resp = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
       method: "PATCH",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body,
     });
+    if (!resp.ok) {
+      if (resp.status === 401) throw new Error("auth_expired");
+      throw new Error("write_failed_" + resp.status);
+    }
   } else {
-    // Create new file in appDataFolder
+    // Create new file
     const meta = JSON.stringify({ name: GDRIVE_FILE, parents: ["appDataFolder"] });
     const form = new FormData();
     form.append("metadata", new Blob([meta], { type: "application/json" }));
     form.append("file",     new Blob([body], { type: "application/json" }));
-    await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
+    const resp = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
       body: form,
     });
+    if (!resp.ok) throw new Error("create_failed_" + resp.status);
+    const result = await resp.json();
+    _driveFileId = result.id; // cache the new file ID
   }
 }
 
@@ -1165,8 +1176,14 @@ export default function App() {
         setDriveStatus("saved");
         console.log("✓ Drive saved");
       } catch(e) {
-        console.log("✗ Drive save FAILED: " + e);
-        setDriveStatus("error");
+        const msg = e?.message || String(e);
+        console.log("✗ Drive save FAILED: " + msg);
+        if (msg === "auth_expired") {
+          setDriveStatus("disconnected");
+          showToast("⚠️ Drive session expired — tap ··· to reconnect");
+        } else {
+          setDriveStatus("error");
+        }
       } finally {
         driveWriteInFlightRef.current = false;
       }

@@ -1054,7 +1054,7 @@ export default function App() {
           const localPlants = localRaw ? JSON.parse(localRaw)?.plants : null;
           const driveLatest = mostRecentLogDate(driveData.plants);
           const localLatest = mostRecentLogDate(localPlants);
-          const driveIsNewer = !localLatest || (driveLatest && new Date(driveLatest) > new Date(localLatest));
+          const driveIsNewer = driveLatest && (!localLatest || new Date(driveLatest) > new Date(localLatest));
           console.log("Sync check — Drive latest log: " + driveLatest + " | Local latest log: " + localLatest + " | Drive wins: " + driveIsNewer);
           if (driveIsNewer) {
             setPlants(migratePlants(driveData.plants));
@@ -1063,18 +1063,15 @@ export default function App() {
             console.log("✓ Drive loaded " + Object.keys(driveData.plants).length + " plants (Drive has newer logs)");
             showToast("☁️ Loaded from Google Drive");
           } else {
-            // Local has newer data (Drive saves failed while token was expired)
-            // Keep local plants (already loaded), push them to Drive so it catches up.
-            console.log("Local is newer than Drive — keeping local, pushing to Drive");
-            const localPlants = readLocal();
-            const localSavedAt1 = readLocalSavedAt();
+            // Local is same age or newer — keep local, push to Drive so it's current
+            console.log("Local is same or newer than Drive — keeping local, pushing to Drive");
             try {
-              await driveWriteFile({ plants: localPlants, chat: (localChat||[]).slice(-40), savedAt: localSavedAt1 });
-              console.log("✓ Pushed local to Drive");
+              const localSavedAt1 = readLocalSavedAt();
+              await driveWriteFile({ plants: local, chat: (localChat||[]).slice(-40), savedAt: localSavedAt1 });
+              console.log("✓ Pushed local to Drive on mount");
             } catch(e2) {
-              console.log("✗ Push to Drive failed: " + e2);
+              console.log("✗ Push to Drive failed on mount: " + e2);
             }
-            showToast("☁️ Drive connected — synced latest data");
           }
           setDriveAuthed(true); driveAuthedRef.current = true;
           try { localStorage.setItem("hr-drive-authed","1"); } catch {}
@@ -1112,7 +1109,7 @@ export default function App() {
         const localPlants2 = localRaw ? JSON.parse(localRaw)?.plants : null;
         const driveLatest2 = mostRecentLogDate(driveData.plants);
         const localLatest2 = mostRecentLogDate(localPlants2);
-        const driveIsNewer = !localLatest2 || (driveLatest2 && new Date(driveLatest2) > new Date(localLatest2));
+        const driveIsNewer = driveLatest2 && (!localLatest2 || new Date(driveLatest2) > new Date(localLatest2));
         console.log("connectDrive sync — Drive latest: " + driveLatest2 + " | Local latest: " + localLatest2 + " | Drive wins: " + driveIsNewer);
         if (driveIsNewer) {
           const count = Object.keys(driveData.plants).length;
@@ -1123,20 +1120,10 @@ export default function App() {
           setDriveStatus("saved");
           showToast("☁️ Loaded " + count + " plants from Drive");
         } else {
-          // Local is newer — keep local, push to Drive so it catches up
-          console.log("Local is newer than Drive — keeping local, pushing to Drive");
-          const localPlants = readLocal();
-          const localSavedAt2 = readLocalSavedAt();
-          try {
-            await driveWriteFile({ plants: localPlants, chat: [], savedAt: localSavedAt2 });
-            console.log("✓ Pushed local to Drive");
-            setDriveStatus("saved");
-            showToast("☁️ Drive connected — synced your latest data");
-          } catch(e2) {
-            console.log("✗ Push to Drive failed: " + e2);
-            setDriveStatus("error");
-            showToast("⚠️ Drive connected but sync failed");
-          }
+          // Local is same age or newer — keep local, do NOT push to Drive on connect
+          console.log("Local is same or newer than Drive — keeping local");
+          setDriveStatus("saved");
+          showToast("☁️ Drive connected — your local data is current");
         }
       } else {
         console.log("no Drive file yet — will create on first save");
